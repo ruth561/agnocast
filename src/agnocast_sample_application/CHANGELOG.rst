@@ -2,6 +2,24 @@
 Changelog for package agnocast_sample_application
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+2.3.3 (2026-04-02)
+------------------
+* feat(agnocastlib): enable file logging for `agnocast::Node` (`#1204 <https://github.com/autowarefoundation/agnocast/issues/1204>`_)
+
+2.3.2 (2026-03-24)
+------------------
+* feat(sample_application): add sample app for doc tutorial (`#1192 <https://github.com/autowarefoundation/agnocast/issues/1192>`_)
+* fix: correct internal dependency declarations in package.xml (`#1188 <https://github.com/autowarefoundation/agnocast/issues/1188>`_)
+
+2.3.1 (2026-03-17)
+------------------
+
+2.3.0 (2026-03-09)
+------------------
+* feat(agnocastlib): align with rclcpp for Timer api. (`#1127 <https://github.com/autowarefoundation/agnocast/issues/1127>`_)
+* fix(components): move tests for component container in `agnocast_components` (`#1126 <https://github.com/autowarefoundation/agnocast/issues/1126>`_)
+* feat(agnocastlib): Support ROS_TIME for create_timer (`#990 <https://github.com/autowarefoundation/agnocast/issues/990>`_)
+
 2.2.0 (2026-02-19)
 ------------------
 * fix: delete deprecated agnocast mempool size (`#1068 <https://github.com/tier4/agnocast/issues/1068>`_)

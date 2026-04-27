@@ -52,14 +52,24 @@ class ListAgnocastVerb(VerbExtension):
 
             def get_bridge_status(topic_name):
                 name_b = topic_name.encode('utf-8')
-                
+
                 has_sub_bridge = False
                 has_pub_bridge = False
+                has_agnocast_sub = False
+                has_agnocast_pub = False
 
                 with agnocast_info_array(lib.get_agnocast_sub_nodes, name_b) as nodes:
-                    has_sub_bridge = any(n.is_bridge for n in nodes)
+                    for n in nodes:
+                        if n.is_bridge:
+                            has_sub_bridge = True
+                        else:
+                            has_agnocast_sub = True
                 with agnocast_info_array(lib.get_agnocast_pub_nodes, name_b) as nodes:
-                    has_pub_bridge = any(n.is_bridge for n in nodes)
+                    for n in nodes:
+                        if n.is_bridge:
+                            has_pub_bridge = True
+                        else:
+                            has_agnocast_pub = True
 
                 mapping = {
                     (True, True):   BridgeStatus.BIDIRECTION,
@@ -67,8 +77,8 @@ class ListAgnocastVerb(VerbExtension):
                     (False, True):  BridgeStatus.ROS2_TO_AGNOCAST,
                     (False, False): BridgeStatus.NONE,
                 }
-                
-                return mapping[(has_sub_bridge, has_pub_bridge)]
+
+                return mapping[(has_sub_bridge, has_pub_bridge)], has_agnocast_pub, has_agnocast_sub
             
             def divide_ros2_topic_into_pubsub(topic_names):
                 pub_topics = []
@@ -105,14 +115,21 @@ class ListAgnocastVerb(VerbExtension):
             
             # Get ros2 topics
             ros2_topics_data = get_topic_names_and_types(node=node)
-            ros2_topics = [name for name, _ in ros2_topics_data]
-            ros2_pub_topics, ros2_sub_topics = divide_ros2_topic_into_pubsub(ros2_topics)
+            ros2_all_topics = set(name for name, _ in ros2_topics_data)
 
             ########################################################################
             # Print topic list
             ########################################################################
             agnocast_topics_set = set(agnocast_topics)
-            ros2_topics_set = set(ros2_pub_topics) | set(ros2_sub_topics)
+
+            # Non-agnocast ROS2 topics cannot have bridge nodes, so no filtering needed.
+            ros2_only_topics = ros2_all_topics - agnocast_topics_set
+            # Only query pub/sub breakdown for topics in both sets (expensive ROS2 API calls).
+            overlapping_candidates = list(agnocast_topics_set & ros2_all_topics)
+            ros2_pub_topics, ros2_sub_topics = divide_ros2_topic_into_pubsub(overlapping_candidates)
+            ros2_pub_topics_set = set(ros2_pub_topics)
+            ros2_sub_topics_set = set(ros2_sub_topics)
+            ros2_topics_set = ros2_only_topics | ros2_pub_topics_set | ros2_sub_topics_set
 
             for topic in sorted(agnocast_topics_set | ros2_topics_set):
                 if topic in agnocast_topics_set and topic not in ros2_topics_set:
@@ -120,19 +137,25 @@ class ListAgnocastVerb(VerbExtension):
                 elif topic in ros2_topics_set and topic not in agnocast_topics_set:
                     suffix = ""
                 else:
-                    match get_bridge_status(topic):
+                    bridge_status, has_agnocast_pub, has_agnocast_sub = get_bridge_status(topic)
+                    needs_r2a = has_agnocast_sub and topic in ros2_pub_topics_set
+                    needs_a2r = has_agnocast_pub and topic in ros2_sub_topics_set
+                    match bridge_status:
                         case BridgeStatus.BIDIRECTION:
                             suffix = " (Agnocast enabled, bridged)"
                         case BridgeStatus.ROS2_TO_AGNOCAST:
-                            if topic in ros2_pub_topics:
-                                suffix = " (Agnocast enabled, bridged)"
+                            if needs_a2r:
+                                suffix = " (WARN: Agnocast and ROS2 endpoints exist but bridge is not active)"
                             else:
-                                suffix = " (Agnocast enabled)"
+                                suffix = " (Agnocast enabled, bridged)"
                         case BridgeStatus.AGNOCAST_TO_ROS2:
-                            if topic in ros2_sub_topics:
+                            if needs_r2a:
+                                suffix = " (WARN: Agnocast and ROS2 endpoints exist but bridge is not active)"
+                            else:
                                 suffix = " (Agnocast enabled, bridged)"
+                        case BridgeStatus.NONE:
+                            if needs_r2a or needs_a2r:
+                                suffix = " (WARN: Agnocast and ROS2 endpoints exist but bridge is not active)"
                             else:
                                 suffix = " (Agnocast enabled)"
-                        case BridgeStatus.NONE:
-                            suffix = " (WARN: Agnocast and ROS2 endpoints exist but bridge is not active)"
                 print(f"{topic}{suffix}")

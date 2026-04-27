@@ -4,8 +4,6 @@
 class NoRclcppServer : public agnocast::Node
 {
   using ServiceT = agnocast_sample_interfaces::srv::SumIntArray;
-  using RequestT = agnocast::Service<ServiceT>::RequestT;
-  using ResponseT = agnocast::Service<ServiceT>::ResponseT;
 
   typename agnocast::Service<ServiceT>::SharedPtr service_;
 
@@ -14,8 +12,8 @@ public:
   {
     service_ = this->create_service<ServiceT>(
       "sum_int_array", [this](
-                         const agnocast::ipc_shared_ptr<RequestT> & request,
-                         agnocast::ipc_shared_ptr<ResponseT> & response) {
+                         const agnocast::ipc_shared_ptr<typename ServiceT::Request> & request,
+                         const agnocast::ipc_shared_ptr<typename ServiceT::Response> & response) {
         response->sum = 0;
         for (int64_t value : request->data) {
           response->sum += value;
@@ -32,6 +30,6 @@ int main(int argc, char * argv[])
   auto node = std::make_shared<NoRclcppServer>();
   executor.add_node(node);
   executor.spin();
-  // TODO(Koichi98): Add agnocast::shutdown() here
+  agnocast::shutdown();
   return 0;
 }

@@ -1,9 +1,9 @@
 
 #include "agnocast/bridge/performance/agnocast_performance_bridge_manager.hpp"
 
+#include "agnocast/agnocast_callback_isolated_executor.hpp"
 #include "agnocast/agnocast_ioctl.hpp"
 #include "agnocast/agnocast_mq.hpp"
-#include "agnocast/agnocast_multi_threaded_executor.hpp"
 #include "agnocast/agnocast_utils.hpp"
 #include "agnocast/bridge/agnocast_bridge_utils.hpp"
 
@@ -12,7 +12,6 @@
 #include <unistd.h>
 
 #include <algorithm>
-#include <vector>
 
 namespace agnocast
 {
@@ -76,7 +75,10 @@ void PerformanceBridgeManager::start_ros_execution()
   std::string node_name = "agnocast_bridge_node_" + std::to_string(getpid());
   container_node_ = std::make_shared<rclcpp::Node>(node_name);
 
-  executor_ = std::make_shared<agnocast::MultiThreadedAgnocastExecutor>();
+  // We must not use single-threaded executors because of how service bridges work. Service bridges
+  // require two callback groups to execute concurrently. If a single-threaded executor is used, it
+  // can deadlock. See the service bridge implementation for details.
+  executor_ = std::make_shared<agnocast::CallbackIsolatedAgnocastExecutor>();
   executor_->add_node(container_node_);
 
   executor_thread_ = std::thread([this]() {
@@ -94,9 +96,9 @@ void PerformanceBridgeManager::start_ros_execution()
 
 void PerformanceBridgeManager::on_mq_request(int fd)
 {
-  std::vector<char> buffer(PERFORMANCE_BRIDGE_MQ_MESSAGE_SIZE);
+  MqMsgPerformanceBridge msg{};
 
-  ssize_t bytes_read = mq_receive(fd, buffer.data(), buffer.size(), nullptr);
+  ssize_t bytes_read = mq_receive(fd, reinterpret_cast<char *>(&msg), sizeof(msg), nullptr);
   if (bytes_read < 0) {
     if (errno != EAGAIN) {
       RCLCPP_WARN_STREAM(
@@ -106,15 +108,22 @@ void PerformanceBridgeManager::on_mq_request(int fd)
     return;
   }
 
-  auto * msg = reinterpret_cast<MqMsgPerformanceBridge *>(buffer.data());
+  // TODO(bdm-k): For debugging purposes. Remove this later.
+  if (msg.is_service) {
+    RCLCPP_INFO(
+      logger_, "Received service bridge request for '%s' with type '%s'",
+      static_cast<const char *>(msg.srv_target.service_name),
+      static_cast<const char *>(msg.srv_target.service_type));
+    return;
+  }
 
-  std::string topic_name = static_cast<const char *>(msg->target.topic_name);
-  topic_local_id_t target_id = msg->target.target_id;
-  std::string message_type = static_cast<const char *>(msg->message_type);
+  std::string topic_name = static_cast<const char *>(msg.pubsub_target.topic_name);
+  topic_local_id_t target_id = msg.pubsub_target.target_id;
+  std::string message_type = static_cast<const char *>(msg.pubsub_target.message_type);
 
-  request_cache_[topic_name][target_id] = *msg;
+  request_cache_[topic_name][target_id] = msg;
 
-  create_bridge_if_needed(topic_name, request_cache_[topic_name], message_type, msg->direction);
+  create_bridge_if_needed(topic_name, request_cache_[topic_name], message_type, msg.direction);
 }
 
 void PerformanceBridgeManager::on_signal()
@@ -140,7 +149,7 @@ void PerformanceBridgeManager::check_and_create_bridges()
     }
 
     const std::string message_type =
-      static_cast<const char *>(requests.begin()->second.message_type);
+      static_cast<const char *>(requests.begin()->second.pubsub_target.message_type);
 
     create_bridge_if_needed(topic_name, requests, message_type, BridgeDirection::ROS2_TO_AGNOCAST);
     create_bridge_if_needed(topic_name, requests, message_type, BridgeDirection::AGNOCAST_TO_ROS2);
@@ -159,6 +168,7 @@ void PerformanceBridgeManager::check_and_remove_bridges()
   while (r2a_it != active_r2a_bridges_.end()) {
     const std::string & topic_name = r2a_it->first;
     auto result = get_agnocast_subscriber_count(topic_name);
+    bool is_demanded_by_ros2 = has_external_ros2_publisher(container_node_.get(), topic_name);
     if (result.count == -1) {
       RCLCPP_ERROR(
         logger_, "Failed to get subscriber count for topic '%s'. Requesting shutdown.",
@@ -170,7 +180,10 @@ void PerformanceBridgeManager::check_and_remove_bridges()
       return;
     }
 
-    if (result.count <= 0) {
+    if (result.count <= 0 || !is_demanded_by_ros2) {
+      if (r2a_it->second.callback_group) {
+        executor_->stop_callback_group(r2a_it->second.callback_group);
+      }
       r2a_it = active_r2a_bridges_.erase(r2a_it);
     } else {
       if (!update_ros2_publisher_num(container_node_.get(), topic_name)) {
@@ -185,6 +198,7 @@ void PerformanceBridgeManager::check_and_remove_bridges()
   while (a2r_it != active_a2r_bridges_.end()) {
     const std::string & topic_name = a2r_it->first;
     auto result = get_agnocast_publisher_count(topic_name);
+    bool is_demanded_by_ros2 = has_external_ros2_subscriber(container_node_.get(), topic_name);
     if (result.count == -1) {
       RCLCPP_ERROR(
         logger_, "Failed to get publisher count for topic '%s'. Requesting shutdown.",
@@ -196,7 +210,10 @@ void PerformanceBridgeManager::check_and_remove_bridges()
       return;
     }
 
-    if (result.count <= 0) {
+    if (result.count <= 0 || !is_demanded_by_ros2) {
+      if (a2r_it->second.callback_group) {
+        executor_->stop_callback_group(a2r_it->second.callback_group);
+      }
       a2r_it = active_a2r_bridges_.erase(a2r_it);
     } else {
       if (!update_ros2_subscriber_num(container_node_.get(), topic_name)) {
@@ -246,14 +263,22 @@ bool PerformanceBridgeManager::should_create_bridge(
     }
 
     const auto stats = get_agnocast_subscriber_count(topic_name);
-    return stats.count > 0;
+    if (stats.count <= 0) {
+      return false;
+    }
+
+    return has_external_ros2_publisher(container_node_.get(), topic_name);
   }
   if (active_a2r_bridges_.count(topic_name) > 0) {
     return false;
   }
 
   const auto stats = get_agnocast_publisher_count(topic_name);
-  return stats.count > 0;
+  if (stats.count <= 0) {
+    return false;
+  }
+
+  return has_external_ros2_subscriber(container_node_.get(), topic_name);
 }
 
 void PerformanceBridgeManager::create_bridge_if_needed(
@@ -293,18 +318,13 @@ void PerformanceBridgeManager::create_bridge_if_needed(
           RCLCPP_ERROR(
             logger_, "Failed to update ROS 2 publisher count for topic '%s'.", topic_name.c_str());
         }
-        active_r2a_bridges_[topic_name] = result.entity_handle;
+        active_r2a_bridges_[topic_name] = result;
       } else {
         if (!update_ros2_subscriber_num(container_node_.get(), topic_name)) {
           RCLCPP_ERROR(
             logger_, "Failed to update ROS 2 subscriber count for topic '%s'.", topic_name.c_str());
         }
-        active_a2r_bridges_[topic_name] = result.entity_handle;
-      }
-
-      if (result.callback_group) {
-        executor_->add_callback_group(
-          result.callback_group, container_node_->get_node_base_interface(), true);
+        active_a2r_bridges_[topic_name] = result;
       }
     }
 
