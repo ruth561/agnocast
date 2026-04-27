@@ -48,10 +48,8 @@ TransformListener::TransformListener(
 TransformListener::~TransformListener()
 {
   if (spin_thread_) {
-    // TODO(Koichi98): Implement cancel() in AgnocastOnlyExecutor to stop the executor gracefully
-    if (dedicated_listener_thread_ && dedicated_listener_thread_->joinable()) {
-      dedicated_listener_thread_->join();
-    }
+    executor_->cancel();
+    dedicated_listener_thread_->join();
   }
 }
 
