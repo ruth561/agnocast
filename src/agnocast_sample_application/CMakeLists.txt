@@ -59,6 +59,18 @@ agnocast_components_register_node(
   EXECUTOR AgnocastOnlySingleThreadedExecutor
 )
 
+add_library(no_rclcpp_glog_sample_listener_component SHARED src/no_rclcpp_glog_sample_subscriber.cpp)
+ament_target_dependencies(no_rclcpp_glog_sample_listener_component rclcpp rclcpp_components agnocastlib agnocast_sample_interfaces)
+target_include_directories(no_rclcpp_glog_sample_listener_component PRIVATE ${agnocastlib_INCLUDE_DIRS})
+target_link_libraries(no_rclcpp_glog_sample_listener_component glog::glog)
+
+agnocast_components_register_node(
+  no_rclcpp_glog_sample_listener_component
+  PLUGIN "NoRclcppGlogSampleSubscriber"
+  EXECUTABLE no_rclcpp_glog_sample_listener
+  EXECUTOR AgnocastOnlySingleThreadedExecutor
+)
+
 add_executable(no_rclcpp_pubsub src/no_rclcpp_pubsub.cpp)
 ament_target_dependencies(no_rclcpp_pubsub agnocastlib agnocast_sample_interfaces)
 target_include_directories(no_rclcpp_pubsub PRIVATE
@@ -151,6 +163,14 @@ install(TARGETS no_rclcpp_listener_component
         ARCHIVE DESTINATION lib
         LIBRARY DESTINATION lib
         RUNTIME DESTINATION bin
+)
+
+ament_export_targets(export_no_rclcpp_glog_sample_listener_component)
+install(TARGETS no_rclcpp_glog_sample_listener_component
+  EXPORT export_no_rclcpp_glog_sample_listener_component
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION bin
 )
 
 install(TARGETS no_rclcpp_pubsub
