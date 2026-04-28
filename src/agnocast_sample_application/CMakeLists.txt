@@ -14,11 +14,20 @@ find_package(agnocastlib REQUIRED)
 find_package(agnocast_sample_interfaces REQUIRED)
 find_package(agnocast_components REQUIRED)
 
+find_package(glog REQUIRED)
+
 add_executable(talker src/minimal_publisher.cpp)
 ament_target_dependencies(talker rclcpp agnocastlib agnocast_sample_interfaces)
 target_include_directories(talker PRIVATE
   ${agnocastlib_INCLUDE_DIRS}
 )
+
+add_executable(glog_sample src/glog_sample.cpp)
+ament_target_dependencies(glog_sample rclcpp agnocastlib agnocast_sample_interfaces)
+target_include_directories(glog_sample PRIVATE
+  ${agnocastlib_INCLUDE_DIRS}
+)
+target_link_libraries(glog_sample glog::glog)
 
 add_executable(cie_tutorial_node src/cie_tutorial_node.cpp)
 ament_target_dependencies(cie_tutorial_node rclcpp agnocastlib)
@@ -125,6 +134,9 @@ install(TARGETS cie_listener_component
 )
 
 install(TARGETS talker
+  DESTINATION lib/${PROJECT_NAME})
+
+install(TARGETS glog_sample
   DESTINATION lib/${PROJECT_NAME})
 
 install(TARGETS cie_talker
