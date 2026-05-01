@@ -21,6 +21,7 @@ PerformanceBridgeManager::PerformanceBridgeManager()
   event_loop_(logger_),
   loader_(logger_)
 {
+  std::cout << "👹👹👹 PerformanceBridgeManager() 👹👹👹" << std::endl;
   if (rclcpp::ok()) {
     rclcpp::shutdown();
   }
@@ -52,6 +53,8 @@ void PerformanceBridgeManager::run()
   std::string proc_name = "agno_pbr_" + std::to_string(getpid());
   prctl(PR_SET_NAME, proc_name.c_str(), 0, 0, 0);
 
+  std::cout << "👹 PerformanceBridgeManager::run() proc_name: " << proc_name << "\n";
+
   start_ros_execution();
 
   event_loop_.set_mq_handler([this](int fd) { this->on_mq_request(fd); });
@@ -75,6 +78,9 @@ void PerformanceBridgeManager::start_ros_execution()
 {
   std::string node_name = "agnocast_bridge_node_" + std::to_string(getpid());
   container_node_ = std::make_shared<rclcpp::Node>(node_name);
+
+  std::cout << "👹 PerformanceBridgeManager::start_ros_execution() node_name: " << node_name
+            << "\n";
 
   // We must not use single-threaded executors because of how service bridges work. Service bridges
   // require two callback groups to execute concurrently. If a single-threaded executor is used, it

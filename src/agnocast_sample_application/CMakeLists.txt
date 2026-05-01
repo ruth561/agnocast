@@ -20,6 +20,12 @@ target_include_directories(talker PRIVATE
   ${agnocastlib_INCLUDE_DIRS}
 )
 
+add_executable(bridge_test_subscriber src/bridge_test_subscriber.cpp)
+ament_target_dependencies(bridge_test_subscriber rclcpp agnocastlib agnocast_sample_interfaces)
+target_include_directories(bridge_test_subscriber PRIVATE
+  ${agnocastlib_INCLUDE_DIRS}
+)
+
 add_executable(cie_tutorial_node src/cie_tutorial_node.cpp)
 ament_target_dependencies(cie_tutorial_node rclcpp agnocastlib)
 
@@ -102,6 +108,8 @@ add_library(listener_component SHARED src/minimal_subscriber.cpp)
 ament_target_dependencies(listener_component rclcpp rclcpp_components agnocastlib agnocast_sample_interfaces)
 target_include_directories(listener_component PRIVATE ${agnocastlib_INCLUDE_DIRS})
 
+
+
 agnocast_components_register_node(
   listener_component
   PLUGIN "MinimalSubscriber"
@@ -125,6 +133,9 @@ install(TARGETS cie_listener_component
 )
 
 install(TARGETS talker
+  DESTINATION lib/${PROJECT_NAME})
+
+install(TARGETS bridge_test_subscriber
   DESTINATION lib/${PROJECT_NAME})
 
 install(TARGETS cie_talker

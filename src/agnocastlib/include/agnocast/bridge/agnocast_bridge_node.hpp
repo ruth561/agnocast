@@ -42,6 +42,11 @@ void request_pubsub_bridge_core(
   const std::string & topic_name, topic_local_id_t id, BridgeDirection direction)
 {
   auto bridge_mode = get_bridge_mode();
+
+  const char * bridge_mode_str = (bridge_mode == BridgeMode::Standard) ? "Standard" : "Performance";
+  std::cout << "🐬 request_pubsub_bridge_core(" << topic_name << ", " << id << ", "
+            << static_cast<int>(direction) << ") in " << bridge_mode_str << " mode\n";
+
   if (bridge_mode == BridgeMode::Standard) {
     send_standard_pubsub_bridge_request<MessageT>(topic_name, id, direction);
   } else if (bridge_mode == BridgeMode::Performance) {
@@ -308,6 +313,10 @@ void send_standard_pubsub_bridge_request(
     symbol_to_send = info.dli_sname;
   }
 
+  std::cout << "🐬 send_standard_pubsub_bridge_request for topic '" << topic_name
+            << "' with factory function '" << symbol_to_send << "' from library '" << info.dli_fname
+            << "'\n";
+
   MqMsgBridge msg = {};
   msg.direction = direction;
   msg.target.target_id = id;
@@ -323,6 +332,7 @@ void send_standard_pubsub_bridge_request(
   msg.factory.fn_offset_reverse = reinterpret_cast<uintptr_t>(fn_reverse) - base_addr;
 
   std::string mq_name = create_mq_name_for_bridge(standard_bridge_manager_pid);
+  std::cout << "🐬 Sending bridge request message to MQ '" << mq_name << "'\n";
   send_mq_message(mq_name, msg, BRIDGE_MQ_MESSAGE_SIZE, logger);
 }
 
@@ -341,6 +351,9 @@ void send_performance_pubsub_bridge_request(
   msg.pubsub_target.target_id = id;
   msg.direction = direction;
   msg.is_service = false;
+
+  std::cout << "🐬 send_performance_pubsub_bridge_request for topic '" << topic_name
+            << "' with message type '" << message_type_name << "'\n";
 
   std::string mq_name = create_mq_name_for_bridge(PERFORMANCE_BRIDGE_VIRTUAL_PID);
   send_mq_message(mq_name, msg, PERFORMANCE_BRIDGE_MQ_MESSAGE_SIZE, logger);

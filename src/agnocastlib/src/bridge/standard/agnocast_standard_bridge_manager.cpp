@@ -22,6 +22,8 @@ StandardBridgeManager::StandardBridgeManager(pid_t target_pid)
     rclcpp::shutdown();
   }
 
+  std::cout << "🍀 StandardBridgeManager(" << target_pid_ << ")\n";
+
   rclcpp::InitOptions init_options{};
   init_options.shutdown_on_signal = false;
   rclcpp::init(0, nullptr, init_options);
@@ -129,12 +131,20 @@ void StandardBridgeManager::register_request(const MqMsgBridge & req)
   // Locally, unique keys include the direction. However, we register the raw topic name (without
   // direction) to the kernel to enforce single-process ownership for the entire topic.
   const auto [topic_name, topic_name_with_direction] = extract_topic_info(req);
+
+  std::cout << "🍀 register_request: topic='" << static_cast<const char *>(topic_name.c_str())
+            << "', direction=" << static_cast<int>(req.direction)
+            << ", target_id=" << req.target.target_id << "\n";
+
   if (active_bridges_.count(topic_name_with_direction) != 0U) {
     return;
   }
 
   auto it = managed_bridges_.find(topic_name);
   if (it == managed_bridges_.end()) {
+    std::cout << "🍀 New bridge request for topic '" << topic_name
+              << "'. Adding to managed bridges.\n";
+
     if (*static_cast<const char *>(req.factory.shared_lib_path) == '\0') {
       RCLCPP_WARN(
         logger_,
@@ -220,6 +230,9 @@ void StandardBridgeManager::rollback_bridge_from_kernel(const std::string & topi
 bool StandardBridgeManager::activate_bridge(const DirectedBridgeRef bridge_ref)
 {
   const auto & [topic_name, entry, direction] = bridge_ref;
+
+  std::cout << "🍀 activate_bridge for topic '" << topic_name << "' in direction "
+            << static_cast<int>(direction) << "\n";
 
   bool is_r2a = (direction == BridgeDirection::ROS2_TO_AGNOCAST);
   std::string_view suffix = is_r2a ? SUFFIX_R2A : SUFFIX_A2R;
@@ -330,6 +343,13 @@ void StandardBridgeManager::process_managed_bridge(const DirectedBridgeRef bridg
   auto [status, owner_pid, kernel_has_r2a, kernel_has_a2r] =
     try_add_bridge_to_kernel(topic_name, is_r2a);
   bool is_active_in_owner = is_r2a ? kernel_has_r2a : kernel_has_a2r;
+
+  const char * status_str = (status == AddBridgeResult::SUCCESS) ? "SUCCESS"
+                            : (status == AddBridgeResult::EXIST) ? "EXIST"
+                                                                 : "ERROR";
+
+  std::cout << "🍀 process_managed_bridge status: " << status_str << " for topic '" << topic_name
+            << "' in direction " << static_cast<int>(direction) << "\n";
 
   switch (status) {
     case AddBridgeResult::SUCCESS:

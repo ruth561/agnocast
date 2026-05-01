@@ -189,6 +189,8 @@ inline mqd_t IpcEventLoopBase::create_and_open_mq(const std::string & name) cons
   attr.mq_maxmsg = max_messages;
   attr.mq_msgsize = mq_msg_size_;
 
+  std::cout << "👹 mq_open: " << name << ", max_messages: " << attr.mq_maxmsg
+            << ", msg_size: " << attr.mq_msgsize << "\n";
   mqd_t fd =
     mq_open(name.c_str(), O_CREAT | O_RDONLY | O_NONBLOCK | O_CLOEXEC, BRIDGE_MQ_PERMS, &attr);
 

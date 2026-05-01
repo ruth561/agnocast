@@ -96,6 +96,9 @@ std::pair<void *, uintptr_t> StandardBridgeLoader::load_library(
 std::pair<BridgeFn, std::shared_ptr<void>> StandardBridgeLoader::resolve_factory_function(
   const std::string & topic_name, BridgeDirection direction, const BridgeFactorySpec & factory_spec)
 {
+  std::cout << "🍀 Resolving factory function for topic '" << topic_name << "' with library '"
+            << factory_spec.shared_lib_path.value_or("<self>") << "'\n";
+
   std::string key_r2a = topic_name;
   key_r2a += SUFFIX_R2A;
   std::string key_a2r = topic_name;

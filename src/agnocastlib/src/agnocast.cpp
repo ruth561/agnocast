@@ -245,6 +245,7 @@ void poll_for_bridge_manager([[maybe_unused]] pid_t target_pid)
       StandardBridgeManager manager(target_pid);
       manager.run();
     } else if (bridge_mode == BridgeMode::Performance) {
+      std::cout << "🐬 Trying to start PerformanceBridgeManager\n";
       {
         PerformanceBridgeManager manager;
         manager.run();
@@ -497,6 +498,9 @@ struct initialize_agnocast_result initialize_agnocast(
     target_pid = getpid();
     should_spawn_bridge = true;
   }
+
+  std::cout << "🐬 should_spawn_bridge: " << should_spawn_bridge << "\n";
+  std::cout << "🐬 target_pid: " << target_pid << "\n";
 
   if (should_spawn_bridge) {
     standard_bridge_manager_pid =
