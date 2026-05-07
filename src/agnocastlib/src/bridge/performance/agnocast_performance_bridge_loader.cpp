@@ -75,8 +75,10 @@ std::vector<std::string> PerformanceBridgeLoader::generate_library_paths(
   const std::string & snake_type, bool is_service)
 {
   std::vector<std::string> paths;
-  const std::string lib_name =
-    (is_service ? "libservice_bridge_plugin_" : "libpubsub_bridge_plugin_") + snake_type + ".so";
+  const std::string lib_name = "libagnocast_bridge_plugins.so";
+
+  std::cout << "👹 Generating library paths for type '" << snake_type << "' with lib name '"
+            << lib_name << "'\n";
 
   // 1. Check environment variable AGNOCAST_BRIDGE_PLUGINS_PATH (colon-separated)
   const char * env_path = std::getenv("AGNOCAST_BRIDGE_PLUGINS_PATH");
@@ -107,6 +109,7 @@ std::vector<std::string> PerformanceBridgeLoader::generate_library_paths(
   return paths;
 }
 
+// ここの実装、pathsの中で最初に見つかった部分しか返されていない
 void * PerformanceBridgeLoader::load_library_from_paths(const std::vector<std::string> & paths)
 {
   if (paths.empty()) {
@@ -123,11 +126,14 @@ void * PerformanceBridgeLoader::load_library_from_paths(const std::vector<std::s
     // Try to load
     void * handle = dlopen(path.c_str(), RTLD_LAZY);
     if (handle != nullptr) {
+      std::cout << "👹 Successfully loaded plugin: " << path << "\n";
       loaded_libraries_[path] = handle;
       return handle;
     }
   }
 
+  // ここに来たら困る！！！！！！！！！！見つからなかったということなので
+  std::cout << "👹👹👹👹👹 ==== THERE IS NO FACTORY FUCTION IN THE LIBRARIES ==== 👹👹👹👹👹\n";
   // All paths failed - log the error
   std::string tried_paths;
   for (const auto & path : paths) {
@@ -146,13 +152,24 @@ void * PerformanceBridgeLoader::get_bridge_factory_symbol(
   std::string snake_type = convert_type_to_snake_case(type_name);
   std::vector<std::string> lib_paths = generate_library_paths(snake_type, is_service);
 
+  // 'std_msgs/msg/String' -> 'std_msgs_msg_String'
+  std::cout << "👹 Looking for " << type_label << " bridge factory symbol '" << symbol_name
+            << "' for type '" << type_name << "' in libraries: (snake_type: " << snake_type
+            << ")\n";
+
   void * handle = load_library_from_paths(lib_paths);
   if (handle == nullptr) {
     return nullptr;
   }
 
+  // <symbol_name>_<snake_type> という名前のシンボル名にしたい
+  std::string typed_symbol_name = symbol_name + "_" + snake_type;
+  std::cout << "👹 Looking for typed symbol '" << typed_symbol_name << "' in the loaded library\n";
+
   dlerror();
-  void * symbol = dlsym(handle, symbol_name.c_str());
+
+  // symbolの探索
+  void * symbol = dlsym(handle, typed_symbol_name.c_str());
 
   const char * dlsym_error = dlerror();
   if (dlsym_error != nullptr) {

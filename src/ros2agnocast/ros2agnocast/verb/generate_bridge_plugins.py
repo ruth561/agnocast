@@ -54,6 +54,7 @@ class GenerateBridgePluginsVerb(VerbExtension):
         )
 
     def main(self, *, args):
+        print("🐬 ros2 agnocast generate-bridge-plugins is called!")
         if not args.all and not args.message_types and not args.service_types:
             print(
                 'Error: At least one of --message-types, --service-types, or --all is required.',
@@ -164,6 +165,7 @@ class GenerateBridgePluginsVerb(VerbExtension):
                 'msg_type': typ,
                 'cpp_type': cpp_type,
                 'header_path': header_path,
+                'snake_type_name': flat_type,
             }
             template_file = templates_pkg.joinpath('pubsub_bridge_plugin.cpp.em')
         else:
@@ -171,6 +173,7 @@ class GenerateBridgePluginsVerb(VerbExtension):
                 'srv_type': typ,
                 'cpp_type': cpp_type,
                 'header_path': header_path,
+                'snake_type_name': flat_type,
             }
             template_file = templates_pkg.joinpath('service_bridge_plugin.cpp.em')
 
