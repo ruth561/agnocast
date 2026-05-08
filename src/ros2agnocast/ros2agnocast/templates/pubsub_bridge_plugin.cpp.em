@@ -4,7 +4,10 @@
 #include "agnocast/agnocast.hpp"
 
 #include "rclcpp/rclcpp.hpp"
+#include "rclcpp/serialization.hpp"
+#include "rclcpp/serialized_message.hpp"
 
+#include <memory>
 #include <utility>
 
 #include "@(header_path)"
@@ -14,7 +17,8 @@ extern "C" PerformancePubsubBridgeResult create_r2a_pubsub_bridge_@(snake_type_n
   const std::string & topic_name,
   const rclcpp::QoS & sub_qos)
 {
-  using AgnoPub = agnocast::BasicPublisher<@(cpp_type), agnocast::NoBridgeRequestPolicy>;
+  using MsgT = @(cpp_type);
+  using AgnoPub = agnocast::BasicPublisher<MsgT, agnocast::NoBridgeRequestPolicy>;
 
   auto agno_pub = std::make_shared<AgnoPub>(
     node.get(),
@@ -29,12 +33,16 @@ extern "C" PerformancePubsubBridgeResult create_r2a_pubsub_bridge_@(snake_type_n
   ros_opts.ignore_local_publications = true;
   ros_opts.callback_group = ros_cb_group;
 
-  auto ros_sub = node->create_subscription<@(cpp_type)>(
+  auto ros_sub = node->create_generic_subscription(
     topic_name,
+    "@(msg_type.replace('::', '/'))",
     sub_qos,
-    [agno_pub](const @(cpp_type)::ConstSharedPtr msg) {
+    [agno_pub](std::shared_ptr<rclcpp::SerializedMessage> serialized_msg) {
+      static const rclcpp::Serialization<MsgT> serialization;
+      MsgT typed_msg;
+      serialization.deserialize_message(serialized_msg.get(), &typed_msg);
       auto loaned_msg = agno_pub->borrow_loaned_message();
-      *loaned_msg = *msg;
+      *loaned_msg = typed_msg;
       agno_pub->publish(std::move(loaned_msg));
     },
     ros_opts);
@@ -47,26 +55,27 @@ extern "C" PerformancePubsubBridgeResult create_a2r_pubsub_bridge_@(snake_type_n
   const std::string & topic_name,
   const rclcpp::QoS & sub_qos)
 {
-  auto ros_pub = node->create_publisher<@(cpp_type)>(
-    topic_name, rclcpp::QoS(agnocast::DEFAULT_QOS_DEPTH).reliable().transient_local());
+  using MsgT = @(cpp_type);
+
+  auto ros_pub = node->create_generic_publisher(
+    topic_name,
+    "@(msg_type.replace('::', '/'))",
+    rclcpp::QoS(agnocast::DEFAULT_QOS_DEPTH).reliable().transient_local());
 
   auto cb_group = node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
 
-  auto agno_callback = [ros_pub](const agnocast::ipc_shared_ptr<@(cpp_type)> msg) {
-    auto loaned_msg = ros_pub->borrow_loaned_message();
-    if (loaned_msg.is_valid()) {
-      loaned_msg.get() = *msg;
-      ros_pub->publish(std::move(loaned_msg));
-    } else {
-      ros_pub->publish(*msg);
-    }
+  auto agno_callback = [ros_pub](const agnocast::ipc_shared_ptr<MsgT> msg) {
+    static const rclcpp::Serialization<MsgT> serialization;
+    rclcpp::SerializedMessage serialized_msg;
+    serialization.serialize_message(msg.get(), &serialized_msg);
+    ros_pub->publish(serialized_msg);
   };
 
   agnocast::SubscriptionOptions sub_opts;
   sub_opts.ignore_local_publications = true;
   sub_opts.callback_group = cb_group;
 
-  using AgnoSub = agnocast::BasicSubscription<@(cpp_type), agnocast::NoBridgeRequestPolicy>;
+  using AgnoSub = agnocast::BasicSubscription<MsgT, agnocast::NoBridgeRequestPolicy>;
   auto agno_sub = std::make_shared<AgnoSub>(
     node.get(),
     topic_name,
