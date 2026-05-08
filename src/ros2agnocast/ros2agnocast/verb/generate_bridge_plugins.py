@@ -134,6 +134,8 @@ class GenerateBridgePluginsVerb(VerbExtension):
 
         templates_pkg = files('ros2agnocast.templates')
 
+        self._generate_generic_sources(src_dir, templates_pkg)
+
         # Generate C++ source files
         for msg_type in message_types:
             self._generate_plugin_source(src_dir, msg_type, InterfaceType.MESSAGE, templates_pkg)
@@ -145,6 +147,17 @@ class GenerateBridgePluginsVerb(VerbExtension):
 
         # Generate package.xml
         self._generate_package_xml(output_dir, package_names, templates_pkg)
+
+    def _generate_generic_sources(self, src_dir, templates_pkg):
+        """Generate shared generic bridge helper sources."""
+        for name in ('generic_functions.hpp', 'generic_functions.cpp'):
+            template_file = templates_pkg.joinpath(f'{name}.em')
+            template_content = template_file.read_text()
+            output_file = os.path.join(src_dir, name)
+            with open(output_file, 'w') as f:
+                interpreter = em.Interpreter(output=f)
+                interpreter.string(template_content)
+                interpreter.shutdown()
 
     def _generate_plugin_source(self, src_dir, typ, interface_type, templates_pkg):
         """Generate a single plugin C++ source file."""

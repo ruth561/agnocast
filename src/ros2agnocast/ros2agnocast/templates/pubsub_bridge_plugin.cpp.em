@@ -12,6 +12,8 @@
 
 #include "@(header_path)"
 
+#include "generic_functions.hpp"
+
 extern "C" PerformancePubsubBridgeResult create_r2a_pubsub_bridge_@(snake_type_name)(
   rclcpp::Node::SharedPtr node,
   const std::string & topic_name,
@@ -27,16 +29,8 @@ extern "C" PerformancePubsubBridgeResult create_r2a_pubsub_bridge_@(snake_type_n
     agnocast::PublisherOptions{},
     true);
 
-  auto ros_cb_group = node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
-
-  rclcpp::SubscriptionOptions ros_opts;
-  ros_opts.ignore_local_publications = true;
-  ros_opts.callback_group = ros_cb_group;
-
-  auto ros_sub = node->create_generic_subscription(
-    topic_name,
-    "@(msg_type.replace('::', '/'))",
-    sub_qos,
+  return create_r2a_generic_bridge(
+    node, topic_name, sub_qos, "@(msg_type.replace('::', '/'))",
     [agno_pub](std::shared_ptr<rclcpp::SerializedMessage> serialized_msg) {
       static const rclcpp::Serialization<MsgT> serialization;
       MsgT typed_msg;
@@ -44,10 +38,7 @@ extern "C" PerformancePubsubBridgeResult create_r2a_pubsub_bridge_@(snake_type_n
       auto loaned_msg = agno_pub->borrow_loaned_message();
       *loaned_msg = typed_msg;
       agno_pub->publish(std::move(loaned_msg));
-    },
-    ros_opts);
-
-  return {ros_sub, ros_cb_group};
+    });
 }
 
 extern "C" PerformancePubsubBridgeResult create_a2r_pubsub_bridge_@(snake_type_name)(
@@ -57,12 +48,9 @@ extern "C" PerformancePubsubBridgeResult create_a2r_pubsub_bridge_@(snake_type_n
 {
   using MsgT = @(cpp_type);
 
-  auto ros_pub = node->create_generic_publisher(
-    topic_name,
-    "@(msg_type.replace('::', '/'))",
+  auto [ros_pub, cb_group] = create_a2r_generic_publisher(
+    node, topic_name, "@(msg_type.replace('::', '/'))",
     rclcpp::QoS(agnocast::DEFAULT_QOS_DEPTH).reliable().transient_local());
-
-  auto cb_group = node->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
 
   auto agno_callback = [ros_pub](const agnocast::ipc_shared_ptr<MsgT> msg) {
     static const rclcpp::Serialization<MsgT> serialization;

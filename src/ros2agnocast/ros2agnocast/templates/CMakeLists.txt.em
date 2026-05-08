@@ -37,6 +37,7 @@ find_package(@(pkg) REQUIRED)
 
 # --- 全てのソースファイルを1つのライブラリにまとめる ---
 add_library(${PROJECT_NAME} SHARED
+  src/generic_functions.cpp
 @[for msg_type in message_types]
   src/pubsub_bridge_plugin_@(msg_type.replace('/', '_')).cpp
 @[end for]
