@@ -8,6 +8,8 @@ set(CMAKE_CXX_COMPILER "clang++")
 
 project(agnocast_bridge_plugins)
 
+set(CMAKE_UNITY_BUILD ON)
+
 if(NOT CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 17)
   set(CMAKE_CXX_STANDARD_REQUIRED ON)
