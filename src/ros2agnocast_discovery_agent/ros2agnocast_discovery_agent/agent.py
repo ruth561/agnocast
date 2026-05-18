@@ -29,6 +29,8 @@ from ros2agnocast_discovery_msgs.msg import (
     AgnocastTopic,
 )
 
+from . import bridge_decider
+
 
 GOSSIP_TOPIC = '/_agnocast_discovery'
 SCHEMA_VERSION = 1
@@ -202,7 +204,8 @@ class DiscoveryAgent(Node):
 
     def _on_tick(self) -> None:
         self._prune_stale_remote_states()
-        self.publish_snapshot()
+        snapshot = self.publish_snapshot()
+        self._dispatch_bridge_requests(snapshot)
 
     def _prune_stale_remote_states(
             self, now_sec: float | None = None,
@@ -228,10 +231,19 @@ class DiscoveryAgent(Node):
         for key in stale_keys:
             del self._remote_states[key]
 
-    def publish_snapshot(self) -> None:
+    def publish_snapshot(self) -> AgnocastDaemonState:
         """Build and publish the current local AgnocastDaemonState."""
         msg = self.build_state()
         self._pub.publish(msg)
+        return msg
+
+    def _dispatch_bridge_requests(self, local_state: AgnocastDaemonState) -> None:
+        """Compare local vs remote gossip state and send bridge requests."""
+        if not self._remote_states:
+            return
+        requests = bridge_decider.decide_bridges(local_state, self._remote_states)
+        if requests:
+            bridge_decider.dispatch_requests(requests, logger=self.get_logger())
 
     def build_state(self) -> AgnocastDaemonState:
         msg = AgnocastDaemonState()
