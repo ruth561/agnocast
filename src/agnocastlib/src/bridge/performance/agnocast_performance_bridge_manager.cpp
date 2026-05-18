@@ -57,6 +57,19 @@ void PerformanceBridgeManager::run()
   event_loop_.set_mq_handler([this](int fd) { this->on_mq_request(fd); });
   event_loop_.set_signal_handler([this]() { this->on_signal(); });
 
+  // Register the per-IPC-namespace daemon-originated bridge request MQ
+  // (`/agnocast_daemon_bridge_perf[_d<ROS_DOMAIN_ID>]`). Failures here are
+  // non-fatal: the bridge_manager continues to handle in-process requests via
+  // the primary MQ.
+  try {
+    event_loop_.register_aux_mq(
+      create_mq_name_for_daemon_bridge(PERFORMANCE_BRIDGE_VIRTUAL_PID),
+      DAEMON_BRIDGE_MQ_MAX_MESSAGES, DAEMON_BRIDGE_MQ_MESSAGE_SIZE);
+    event_loop_.set_aux_mq_handler([this](int fd) { this->on_daemon_mq_request(fd); });
+  } catch (const std::exception & e) {
+    RCLCPP_WARN(logger_, "Failed to register daemon bridge MQ: %s", e.what());
+  }
+
   while (!shutdown_requested_) {
     if (!event_loop_.spin_once(EVENT_LOOP_TIMEOUT_MS)) {
       RCLCPP_ERROR(logger_, "Event loop spin failed.");
@@ -120,6 +133,80 @@ void PerformanceBridgeManager::on_mq_request(int fd)
 
     create_pubsub_bridge_if_needed(
       topic_name, request_cache_[topic_name], message_type, msg.direction);
+  }
+}
+
+void PerformanceBridgeManager::on_daemon_mq_request(int fd)
+{
+  MqMsgDaemonBridge req{};
+  while (mq_receive(fd, reinterpret_cast<char *>(&req), sizeof(req), nullptr) > 0) {
+    if (shutdown_requested_) {
+      break;
+    }
+    create_daemon_pubsub_bridge_if_needed(req);
+  }
+}
+
+void PerformanceBridgeManager::create_daemon_pubsub_bridge_if_needed(const MqMsgDaemonBridge & req)
+{
+  const std::string topic_name = static_cast<const char *>(req.topic_name);
+  const std::string message_type = static_cast<const char *>(req.type_name);
+  const bool is_r2a = (req.direction == BridgeDirection::ROS2_TO_AGNOCAST);
+
+  if (is_r2a && active_pubsub_r2a_bridges_.count(topic_name) > 0) {
+    return;
+  }
+  if (!is_r2a && active_pubsub_a2r_bridges_.count(topic_name) > 0) {
+    return;
+  }
+
+  try {
+    rclcpp::QoS target_qos = rclcpp::QoS(req.qos_depth)
+                               .durability(
+                                 req.qos_is_transient_local
+                                   ? rclcpp::DurabilityPolicy::TransientLocal
+                                   : rclcpp::DurabilityPolicy::Volatile)
+                               .reliability(
+                                 req.qos_is_reliable ? rclcpp::ReliabilityPolicy::Reliable
+                                                     : rclcpp::ReliabilityPolicy::BestEffort);
+
+    PerformancePubsubBridgeResult result;
+    if (is_r2a) {
+      result =
+        loader_.create_r2a_pubsub_bridge(container_node_, topic_name, message_type, target_qos);
+    } else {
+      result =
+        loader_.create_a2r_pubsub_bridge(container_node_, topic_name, message_type, target_qos);
+    }
+
+    if (!result.entity_handle) {
+      RCLCPP_ERROR(
+        logger_, "Daemon bridge loader returned null for '%s' (type '%s')", topic_name.c_str(),
+        message_type.c_str());
+      return;
+    }
+
+    if (is_r2a) {
+      if (!update_ros2_publisher_num(container_node_.get(), topic_name)) {
+        RCLCPP_ERROR(
+          logger_, "Failed to update ROS 2 publisher count for topic '%s'.", topic_name.c_str());
+      }
+      active_pubsub_r2a_bridges_[topic_name] = result;
+    } else {
+      if (!update_ros2_subscriber_num(container_node_.get(), topic_name)) {
+        RCLCPP_ERROR(
+          logger_, "Failed to update ROS 2 subscriber count for topic '%s'.", topic_name.c_str());
+      }
+      active_pubsub_a2r_bridges_[topic_name] = result;
+    }
+  } catch (const std::exception & e) {
+    RCLCPP_WARN(
+      logger_, "Failed to create daemon bridge for '%s' (type '%s'): %s", topic_name.c_str(),
+      message_type.c_str(), e.what());
+  } catch (...) {
+    RCLCPP_WARN(
+      logger_, "Unknown error creating daemon bridge for '%s' (type '%s')", topic_name.c_str(),
+      message_type.c_str());
   }
 }
 

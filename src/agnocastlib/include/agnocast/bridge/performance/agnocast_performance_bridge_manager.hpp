@@ -58,7 +58,10 @@ private:
   void start_ros_execution();
 
   void on_mq_request(int fd);
+  void on_daemon_mq_request(int fd);
   void on_signal();
+
+  void create_daemon_pubsub_bridge_if_needed(const MqMsgDaemonBridge & req);
 
   void check_and_create_pubsub_bridges();
   void check_and_remove_pubsub_bridges();
