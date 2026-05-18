@@ -48,6 +48,13 @@ public:
   void set_mq_handler(EventCallback cb);
   void set_signal_handler(SignalCallback cb);
 
+  // Register a secondary MQ on this event loop (e.g. the daemon-originated
+  // bridge request MQ in F1). The MQ is created with `O_CREAT | O_RDONLY |
+  // O_NONBLOCK | O_CLOEXEC` and `BRIDGE_MQ_PERMS`. Must be called before
+  // `spin_once`. Throws on failure.
+  void register_aux_mq(const std::string & name, long max_messages, long msg_size);
+  void set_aux_mq_handler(EventCallback cb);
+
   const std::string & get_mq_name() const { return mq_name_; }
 
 protected:
@@ -63,7 +70,11 @@ private:
 
   long mq_msg_size_;
 
+  mqd_t aux_mq_fd_ = (mqd_t)-1;
+  std::string aux_mq_name_;
+
   EventCallback mq_cb_;
+  EventCallback aux_mq_cb_;
   SignalCallback signal_cb_;
 
   void setup_mq();
@@ -121,6 +132,10 @@ inline bool IpcEventLoopBase::spin_once(int timeout_ms)
       if (mq_cb_) {
         mq_cb_(fd);
       }
+    } else if (fd == aux_mq_fd_ && aux_mq_fd_ != (mqd_t)-1) {
+      if (aux_mq_cb_) {
+        aux_mq_cb_(fd);
+      }
     } else if (fd == signal_fd_) {
       struct signalfd_siginfo fdsi
       {
@@ -146,9 +161,49 @@ inline void IpcEventLoopBase::set_mq_handler(EventCallback cb)
   mq_cb_ = std::move(cb);
 }
 
+inline void IpcEventLoopBase::set_aux_mq_handler(EventCallback cb)
+{
+  aux_mq_cb_ = std::move(cb);
+}
+
 inline void IpcEventLoopBase::set_signal_handler(SignalCallback cb)
 {
   signal_cb_ = std::move(cb);
+}
+
+inline void IpcEventLoopBase::register_aux_mq(
+  const std::string & name, long max_messages, long msg_size)
+{
+  if (aux_mq_fd_ != (mqd_t)-1) {
+    throw std::runtime_error("register_aux_mq called twice");
+  }
+
+  struct mq_attr attr = {};
+  attr.mq_maxmsg = max_messages;
+  attr.mq_msgsize = msg_size;
+
+  mqd_t fd =
+    mq_open(name.c_str(), O_CREAT | O_RDONLY | O_NONBLOCK | O_CLOEXEC, BRIDGE_MQ_PERMS, &attr);
+  if (fd == -1) {
+    throw std::system_error(errno, std::generic_category(), "aux MQ open failed: " + name);
+  }
+
+  aux_mq_fd_ = fd;
+  aux_mq_name_ = name;
+
+  try {
+    add_fd_to_epoll(aux_mq_fd_, "AuxMQ");
+  } catch (...) {
+    if (mq_close(aux_mq_fd_) == -1) {
+      RCLCPP_WARN(logger_, "Failed to close aux mq_fd: %s", strerror(errno));
+    }
+    if (mq_unlink(aux_mq_name_.c_str()) == -1 && errno != ENOENT) {
+      RCLCPP_WARN(logger_, "Failed to unlink aux mq: %s", strerror(errno));
+    }
+    aux_mq_fd_ = (mqd_t)-1;
+    aux_mq_name_.clear();
+    throw;
+  }
 }
 
 inline void IpcEventLoopBase::setup_mq()
@@ -267,6 +322,21 @@ inline void IpcEventLoopBase::cleanup_resources()
     if (mq_unlink(mq_name_.c_str()) == -1 && errno != ENOENT) {
       RCLCPP_WARN_STREAM(
         logger_, "Failed to unlink mq for mq_name='" << mq_name_ << "': " << strerror(errno));
+    }
+  }
+
+  if (aux_mq_fd_ != (mqd_t)-1) {
+    if (mq_close(aux_mq_fd_) == -1) {
+      RCLCPP_WARN_STREAM(
+        logger_,
+        "Failed to close aux mq_fd for mq_name='" << aux_mq_name_ << "': " << strerror(errno));
+    }
+    aux_mq_fd_ = (mqd_t)-1;
+
+    if (mq_unlink(aux_mq_name_.c_str()) == -1 && errno != ENOENT) {
+      RCLCPP_WARN_STREAM(
+        logger_,
+        "Failed to unlink aux mq for mq_name='" << aux_mq_name_ << "': " << strerror(errno));
     }
   }
 }
