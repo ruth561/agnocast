@@ -7,6 +7,7 @@
 #include "agnocast/agnocast_smart_pointer.hpp"
 #include "agnocast/agnocast_tracepoint_wrapper.h"
 #include "agnocast/agnocast_utils.hpp"
+#include "agnocast/internal/bridge_factory_registry.hpp"
 #include "rclcpp/detail/qos_parameters.hpp"
 #include "rclcpp/rclcpp.hpp"
 
@@ -142,6 +143,10 @@ class BasicSubscription : public SubscriptionBase
 
     id_ = add_subscriber_args.ret_id;
     BridgeRequestPolicy::template request_bridge<MessageT>(topic_name_, id_);
+    // Register bridge factory pair for MessageT so daemon-originated bridge
+    // requests can be resolved within this process by type name alone (F1).
+    // No-op for non-message types (gated via SFINAE).
+    internal::register_bridge_factory<MessageT>();
 
     mqd_t mq = open_mq_for_subscription(topic_name_, id_, mq_subscription_);
 
@@ -251,6 +256,10 @@ private:
 
     id_ = add_subscriber_args.ret_id;
     BridgeRequestPolicy::template request_bridge<MessageT>(topic_name_, id_);
+    // Register bridge factory pair for MessageT so daemon-originated bridge
+    // requests can be resolved within this process by type name alone (F1).
+    // No-op for non-message types (gated via SFINAE).
+    internal::register_bridge_factory<MessageT>();
 
     return actual_qos;
   }
