@@ -99,9 +99,11 @@ private:
   void start_ros_execution();
 
   void on_mq_request(mqd_t fd);
+  void on_daemon_mq_request(mqd_t fd);
   void on_signal();
 
   void register_pubsub_request(const MqMsgBridge & req);
+  void create_daemon_pubsub_bridge_if_needed(const MqMsgDaemonBridge & req);
 
   static BridgeKernelResult try_add_pubsub_bridge_to_kernel(
     const std::string & topic_name, bool is_r2a);

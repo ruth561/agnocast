@@ -87,6 +87,19 @@ std::string create_mq_name_for_bridge(const pid_t pid)
   return name;
 }
 
+std::string create_mq_name_for_daemon_bridge(const pid_t pid)
+{
+  if (pid == PERFORMANCE_BRIDGE_VIRTUAL_PID) {
+    std::string name = PERFORMANCE_DAEMON_BRIDGE_MQ_NAME;
+    const char * domain_id = getenv("ROS_DOMAIN_ID");
+    if (domain_id != nullptr) {
+      name += "_d" + std::string(domain_id);
+    }
+    return name;
+  }
+  return std::string(DAEMON_BRIDGE_MQ_PREFIX) + "@" + std::to_string(pid);
+}
+
 std::string create_shm_name(const pid_t pid)
 {
   return "/agnocast@" + std::to_string(pid);

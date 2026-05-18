@@ -2,6 +2,7 @@
 
 #include "agnocast/agnocast_utils.hpp"
 #include "agnocast/bridge/agnocast_bridge_utils.hpp"
+#include "agnocast/internal/bridge_factory_registry.hpp"
 
 #include <sys/prctl.h>
 #include <unistd.h>
@@ -69,6 +70,18 @@ void StandardBridgeManager::run()
   event_loop_.set_mq_handler([this](int fd) { this->on_mq_request(fd); });
   event_loop_.set_signal_handler([this]() { this->on_signal(); });
 
+  // Register the daemon-originated bridge request MQ
+  // (`/agnocast_daemon_bridge@<pid>`). Failures here are non-fatal: the
+  // bridge_manager continues to handle in-process requests via the primary MQ.
+  try {
+    event_loop_.register_aux_mq(
+      create_mq_name_for_daemon_bridge(getpid()), DAEMON_BRIDGE_MQ_MAX_MESSAGES,
+      DAEMON_BRIDGE_MQ_MESSAGE_SIZE);
+    event_loop_.set_aux_mq_handler([this](int fd) { this->on_daemon_mq_request(fd); });
+  } catch (const std::exception & e) {
+    RCLCPP_WARN(logger_, "Failed to register daemon bridge MQ: %s", e.what());
+  }
+
   while (!shutdown_requested_) {
     if (!event_loop_.spin_once(EVENT_LOOP_TIMEOUT_MS)) {
       break;
@@ -119,6 +132,100 @@ void StandardBridgeManager::on_mq_request(mqd_t fd)
     } else {
       register_pubsub_request(req);
     }
+  }
+}
+
+void StandardBridgeManager::on_daemon_mq_request(mqd_t fd)
+{
+  MqMsgDaemonBridge req{};
+  while (mq_receive(fd, reinterpret_cast<char *>(&req), sizeof(req), nullptr) > 0) {
+    if (shutdown_requested_) {
+      break;
+    }
+    create_daemon_pubsub_bridge_if_needed(req);
+  }
+}
+
+void StandardBridgeManager::create_daemon_pubsub_bridge_if_needed(const MqMsgDaemonBridge & req)
+{
+  const std::string topic_name = static_cast<const char *>(req.topic_name);
+  const std::string type_name = static_cast<const char *>(req.type_name);
+
+  std::string_view suffix = (req.direction == BridgeDirection::ROS2_TO_AGNOCAST) ? SUFFIX_PUBSUB_R2A
+                                                                                 : SUFFIX_PUBSUB_A2R;
+  const std::string topic_name_with_direction = topic_name + std::string(suffix);
+
+  if (active_pubsub_bridges_.count(topic_name_with_direction) != 0U) {
+    return;
+  }
+
+  internal::BridgeFactoryEntry entry;
+  if (!internal::BridgeFactoryRegistry::instance().lookup(type_name, entry)) {
+    RCLCPP_WARN(
+      logger_,
+      "Daemon bridge request for topic '%s' (type '%s') skipped: no factory registered in this "
+      "process.",
+      topic_name.c_str(), type_name.c_str());
+    return;
+  }
+
+  const bool is_r2a = (req.direction == BridgeDirection::ROS2_TO_AGNOCAST);
+
+  // Ensure the kernel-side bridge ownership is recorded for this process so
+  // that subsequent ref-bit accounting works the same as for self-issued
+  // requests. If another process already owns the bridge we drop the request
+  // — that other process should be servicing the same topic.
+  auto [status, owner_pid, kernel_has_r2a, kernel_has_a2r] =
+    try_add_pubsub_bridge_to_kernel(topic_name, is_r2a);
+  (void)owner_pid;
+  (void)kernel_has_r2a;
+  (void)kernel_has_a2r;
+
+  if (status == AddBridgeResult::EXIST) {
+    return;
+  }
+  if (status == AddBridgeResult::ERROR) {
+    RCLCPP_ERROR(
+      logger_, "Daemon bridge request: failed to add bridge for '%s' to kernel", topic_name.c_str());
+    return;
+  }
+
+  try {
+    rclcpp::QoS target_qos = rclcpp::QoS(req.qos_depth)
+                               .durability(
+                                 req.qos_is_transient_local
+                                   ? rclcpp::DurabilityPolicy::TransientLocal
+                                   : rclcpp::DurabilityPolicy::Volatile)
+                               .reliability(
+                                 req.qos_is_reliable ? rclcpp::ReliabilityPolicy::Reliable
+                                                     : rclcpp::ReliabilityPolicy::BestEffort);
+    auto bridge = is_r2a ? entry.r2a(container_node_, topic_name, target_qos)
+                         : entry.a2r(container_node_, topic_name, target_qos);
+    if (!bridge) {
+      RCLCPP_ERROR(
+        logger_, "Daemon bridge factory returned null for '%s'", topic_name_with_direction.c_str());
+      rollback_pubsub_bridge_from_kernel(topic_name, is_r2a);
+      return;
+    }
+
+    if (is_r2a) {
+      if (!update_ros2_publisher_num(container_node_.get(), topic_name)) {
+        RCLCPP_ERROR(
+          logger_, "Failed to update ROS 2 publisher count for topic '%s'.", topic_name.c_str());
+      }
+    } else {
+      if (!update_ros2_subscriber_num(container_node_.get(), topic_name)) {
+        RCLCPP_ERROR(
+          logger_, "Failed to update ROS 2 subscriber count for topic '%s'.", topic_name.c_str());
+      }
+    }
+
+    active_pubsub_bridges_[topic_name_with_direction] = bridge;
+  } catch (const std::exception & e) {
+    RCLCPP_ERROR(
+      logger_, "Failed to activate daemon bridge for '%s': %s", topic_name_with_direction.c_str(),
+      e.what());
+    rollback_pubsub_bridge_from_kernel(topic_name, is_r2a);
   }
 }
 

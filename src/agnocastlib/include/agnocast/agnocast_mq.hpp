@@ -94,11 +94,19 @@ struct MqMsgPerformanceBridge
 // daemon can fill it without process-specific factory pointers (Standard mode
 // resolves via process-local bridge factory registry; Performance mode resolves
 // via the existing plugin loader).
+//
+// QoS is supplied explicitly because the receiving bridge_manager cannot
+// always resolve it locally (the kernel exposes subscriber QoS by id but not
+// publisher QoS without an id). The daemon already knows the QoS of every
+// local endpoint via the same procfs read used to build the gossip payload.
 struct MqMsgDaemonBridge
 {
   char topic_name[TOPIC_NAME_BUFFER_SIZE];
   char type_name[MESSAGE_TYPE_BUFFER_SIZE];
   BridgeDirection direction;
+  uint32_t qos_depth;
+  bool qos_is_transient_local;
+  bool qos_is_reliable;
 };
 
 constexpr int64_t BRIDGE_MQ_MAX_MESSAGES = 2;
