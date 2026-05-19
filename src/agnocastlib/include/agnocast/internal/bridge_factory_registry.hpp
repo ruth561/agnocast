@@ -30,16 +30,16 @@
 
 #pragma once
 
+#include <rclcpp/node.hpp>
+#include <rclcpp/qos.hpp>
+#include <rosidl_runtime_cpp/traits.hpp>
+
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <type_traits>
 #include <unordered_map>
-
-#include <rclcpp/node.hpp>
-#include <rclcpp/qos.hpp>
-#include <rosidl_runtime_cpp/traits.hpp>
 
 namespace agnocast
 {
@@ -108,12 +108,12 @@ void register_bridge_factory()
   if constexpr (rosidl_generator_traits::is_message<MessageT>::value) {
     const std::string type_name = rosidl_generator_traits::name<MessageT>();
     BridgeFactoryEntry entry{
-      [](rclcpp::Node::SharedPtr node, const std::string & topic_name,
-         const rclcpp::QoS & qos) -> std::shared_ptr<PubsubBridgeBase> {
+      [](rclcpp::Node::SharedPtr node, const std::string & topic_name, const rclcpp::QoS & qos)
+        -> std::shared_ptr<PubsubBridgeBase> {
         return start_a2r_pubsub_node<MessageT>(node, topic_name, qos);
       },
-      [](rclcpp::Node::SharedPtr node, const std::string & topic_name,
-         const rclcpp::QoS & qos) -> std::shared_ptr<PubsubBridgeBase> {
+      [](rclcpp::Node::SharedPtr node, const std::string & topic_name, const rclcpp::QoS & qos)
+        -> std::shared_ptr<PubsubBridgeBase> {
         return start_r2a_pubsub_node<MessageT>(node, topic_name, qos);
       },
     };

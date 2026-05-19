@@ -151,8 +151,8 @@ void StandardBridgeManager::create_daemon_pubsub_bridge_if_needed(const MqMsgDae
   const std::string topic_name = static_cast<const char *>(req.topic_name);
   const std::string type_name = static_cast<const char *>(req.type_name);
 
-  std::string_view suffix = (req.direction == BridgeDirection::ROS2_TO_AGNOCAST) ? SUFFIX_PUBSUB_R2A
-                                                                                 : SUFFIX_PUBSUB_A2R;
+  std::string_view suffix =
+    (req.direction == BridgeDirection::ROS2_TO_AGNOCAST) ? SUFFIX_PUBSUB_R2A : SUFFIX_PUBSUB_A2R;
   const std::string topic_name_with_direction = topic_name + std::string(suffix);
 
   if (active_pubsub_bridges_.count(topic_name_with_direction) != 0U) {
@@ -186,19 +186,20 @@ void StandardBridgeManager::create_daemon_pubsub_bridge_if_needed(const MqMsgDae
   }
   if (status == AddBridgeResult::ERROR) {
     RCLCPP_ERROR(
-      logger_, "Daemon bridge request: failed to add bridge for '%s' to kernel", topic_name.c_str());
+      logger_, "Daemon bridge request: failed to add bridge for '%s' to kernel",
+      topic_name.c_str());
     return;
   }
 
   try {
-    rclcpp::QoS target_qos = rclcpp::QoS(req.qos_depth)
-                               .durability(
-                                 req.qos_is_transient_local
-                                   ? rclcpp::DurabilityPolicy::TransientLocal
-                                   : rclcpp::DurabilityPolicy::Volatile)
-                               .reliability(
-                                 req.qos_is_reliable ? rclcpp::ReliabilityPolicy::Reliable
-                                                     : rclcpp::ReliabilityPolicy::BestEffort);
+    rclcpp::QoS target_qos =
+      rclcpp::QoS(req.qos_depth)
+        .durability(
+          req.qos_is_transient_local ? rclcpp::DurabilityPolicy::TransientLocal
+                                     : rclcpp::DurabilityPolicy::Volatile)
+        .reliability(
+          req.qos_is_reliable ? rclcpp::ReliabilityPolicy::Reliable
+                              : rclcpp::ReliabilityPolicy::BestEffort);
     auto bridge = is_r2a ? entry.r2a(container_node_, topic_name, target_qos)
                          : entry.a2r(container_node_, topic_name, target_qos);
     if (!bridge) {

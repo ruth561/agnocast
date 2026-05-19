@@ -122,7 +122,6 @@ constexpr mode_t BRIDGE_MQ_PERMS = 0600;
 //   daemon picks the target pid based on gossip data).
 // - Performance mode: `/agnocast_daemon_bridge_perf` (one MQ per IPC namespace).
 inline constexpr const char * DAEMON_BRIDGE_MQ_PREFIX = "/agnocast_daemon_bridge";
-inline constexpr const char * PERFORMANCE_DAEMON_BRIDGE_MQ_NAME =
-  "/agnocast_daemon_bridge_perf";
+inline constexpr const char * PERFORMANCE_DAEMON_BRIDGE_MQ_NAME = "/agnocast_daemon_bridge_perf";
 
 }  // namespace agnocast

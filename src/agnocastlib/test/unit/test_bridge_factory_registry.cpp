@@ -9,6 +9,7 @@
 #include "agnocast/internal/bridge_factory_registry.hpp"
 
 #include <rcl_interfaces/srv/get_parameters.hpp>
+
 #include <std_msgs/msg/int32.hpp>
 #include <std_msgs/msg/string.hpp>
 
@@ -57,14 +58,16 @@ TEST(BridgeFactoryRegistry, RegisterReplacesExistingEntry)
 
   auto first = make_dummy_entry();
   first.a2r = [marker = std::make_shared<int>(1)](
-                rclcpp::Node::SharedPtr, const std::string &,
-                const rclcpp::QoS &) { return std::shared_ptr<agnocast::PubsubBridgeBase>{}; };
+                rclcpp::Node::SharedPtr, const std::string &, const rclcpp::QoS &) {
+    return std::shared_ptr<agnocast::PubsubBridgeBase>{};
+  };
   registry.register_entry("test/unit/Replaceable", first);
 
   auto second = make_dummy_entry();
   second.a2r = [marker = std::make_shared<int>(2)](
-                 rclcpp::Node::SharedPtr, const std::string &,
-                 const rclcpp::QoS &) { return std::shared_ptr<agnocast::PubsubBridgeBase>{}; };
+                 rclcpp::Node::SharedPtr, const std::string &, const rclcpp::QoS &) {
+    return std::shared_ptr<agnocast::PubsubBridgeBase>{};
+  };
   registry.register_entry("test/unit/Replaceable", second);
 
   agnocast::internal::BridgeFactoryEntry got;

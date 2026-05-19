@@ -161,14 +161,14 @@ void PerformanceBridgeManager::create_daemon_pubsub_bridge_if_needed(const MqMsg
   }
 
   try {
-    rclcpp::QoS target_qos = rclcpp::QoS(req.qos_depth)
-                               .durability(
-                                 req.qos_is_transient_local
-                                   ? rclcpp::DurabilityPolicy::TransientLocal
-                                   : rclcpp::DurabilityPolicy::Volatile)
-                               .reliability(
-                                 req.qos_is_reliable ? rclcpp::ReliabilityPolicy::Reliable
-                                                     : rclcpp::ReliabilityPolicy::BestEffort);
+    rclcpp::QoS target_qos =
+      rclcpp::QoS(req.qos_depth)
+        .durability(
+          req.qos_is_transient_local ? rclcpp::DurabilityPolicy::TransientLocal
+                                     : rclcpp::DurabilityPolicy::Volatile)
+        .reliability(
+          req.qos_is_reliable ? rclcpp::ReliabilityPolicy::Reliable
+                              : rclcpp::ReliabilityPolicy::BestEffort);
 
     PerformancePubsubBridgeResult result;
     if (is_r2a) {
