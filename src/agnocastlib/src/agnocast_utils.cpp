@@ -3,8 +3,11 @@
 #include "agnocast/agnocast_mq.hpp"
 #include "agnocast/node/agnocast_node.hpp"
 
+#include <sys/stat.h>
+
 #include <cstdlib>
 #include <cstring>
+#include <system_error>
 
 namespace agnocast
 {
@@ -98,6 +101,17 @@ std::string create_mq_name_for_daemon_bridge(const pid_t pid)
     return name;
   }
   return std::string(DAEMON_BRIDGE_MQ_PREFIX) + "@" + std::to_string(pid);
+}
+
+uint64_t get_self_ipc_ns_inode()
+{
+  struct stat st
+  {
+  };
+  if (stat("/proc/self/ns/ipc", &st) != 0) {
+    throw std::system_error(errno, std::generic_category(), "stat(/proc/self/ns/ipc)");
+  }
+  return static_cast<uint64_t>(st.st_ino);
 }
 
 std::string create_shm_name(const pid_t pid)
