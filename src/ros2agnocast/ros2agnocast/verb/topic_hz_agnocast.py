@@ -1,11 +1,13 @@
 import time
 
+import rclpy
 from ros2cli.node.direct import DirectNode
 from ros2topic.verb.hz import HzVerb
 from ros2topic.verb.hz import main as hz_main
 from std_msgs.msg import String as _DummyMsgType
 
-BRIDGE_WAIT_TIME = 2.0  # seconds to wait for the Agnocast bridge to be created
+DEFAULT_BRIDGE_TIMEOUT = 10.0   # seconds
+POLL_INTERVAL = 0.2             # seconds between publisher-count checks
 
 
 class TopicHzAgnocastVerb(HzVerb):
@@ -19,11 +21,21 @@ class TopicHzAgnocastVerb(HzVerb):
             '  A dummy ROS 2 subscriber is first created to trigger the Agnocast→ROS 2 bridge, '
             'then the standard ros2 topic hz measurement begins.'
         )
+        parser.add_argument(
+            '--bridge-timeout',
+            dest='bridge_timeout', type=float, default=DEFAULT_BRIDGE_TIMEOUT,
+            metavar='SEC',
+            help='Seconds to wait for the Agnocast bridge (ROS 2 publisher) to appear '
+                 '(default: %.1f). '
+                 'If no publisher appears within this time, the topic is assumed to not '
+                 'exist in Agnocast.' % DEFAULT_BRIDGE_TIMEOUT)
 
     def main(self, *, args):
         # Step 1: Register a dummy subscriber so that the Agnocast→ROS 2 bridge is created.
-        # raw=True allows subscribing without knowing the actual message type; the callback
-        # receives raw serialized bytes instead of a deserialized message object.
+        # raw=True allows subscribing without knowing the actual message type at subscribe time;
+        # the callback receives raw serialized bytes instead of a deserialized message object.
+        # Once the bridge detects this subscriber, it spawns a ROS 2 publisher to forward
+        # Agnocast messages, which we detect below as the readiness signal.
         with DirectNode(args) as node:
             _dummy_sub = node.node.create_subscription(
                 _DummyMsgType,
@@ -33,10 +45,29 @@ class TopicHzAgnocastVerb(HzVerb):
                 raw=True)
 
             print(
-                'Dummy subscriber created. '
-                'Waiting %.1f s for Agnocast bridge to be established...' % BRIDGE_WAIT_TIME)
-            time.sleep(BRIDGE_WAIT_TIME)
+                "Waiting up to %.1f s for Agnocast bridge "
+                "(ROS 2 publisher on '%s') to appear..." % (
+                    args.bridge_timeout, args.topic_name))
+
+            deadline = time.monotonic() + args.bridge_timeout
+            bridge_ready = False
+            while rclpy.ok() and time.monotonic() < deadline:
+                rclpy.spin_once(node.node, timeout_sec=POLL_INTERVAL)
+                pubs = node.node.get_publishers_info_by_topic(args.topic_name)
+                if pubs:
+                    bridge_ready = True
+                    break
+
         # DirectNode (and the dummy subscriber) is destroyed here.
+
+        if not bridge_ready:
+            print(
+                "ERROR: No ROS 2 publisher appeared on '%s' within %.1f s. "
+                'The topic may not exist in Agnocast or the bridge failed to start.' % (
+                    args.topic_name, args.bridge_timeout))
+            return 1
+
+        print("Bridge is ready. Starting hz measurement...")
 
         # Step 2: Hand off to the standard ros2 topic hz implementation.
         return hz_main(args)
