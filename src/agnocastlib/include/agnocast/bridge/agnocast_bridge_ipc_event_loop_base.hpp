@@ -49,7 +49,7 @@ public:
   void set_signal_handler(SignalCallback cb);
 
   // Register a secondary MQ on this event loop (e.g. the daemon-originated
-  // bridge request MQ in F1). The MQ is created with `O_CREAT | O_RDONLY |
+  // bridge request MQ). The MQ is created with `O_CREAT | O_RDONLY |
   // O_NONBLOCK | O_CLOEXEC` and `BRIDGE_MQ_PERMS`. Must be called before
   // `spin_once`. Throws on failure.
   void register_aux_mq(const std::string & name, long max_messages, long msg_size);

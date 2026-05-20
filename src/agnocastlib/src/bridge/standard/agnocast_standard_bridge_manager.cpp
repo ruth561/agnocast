@@ -74,10 +74,17 @@ void StandardBridgeManager::run()
   // (`/agnocast_daemon_bridge@<pid>`). Failures here are non-fatal: the
   // bridge_manager continues to handle in-process requests via the primary MQ.
   try {
+    const auto daemon_mq_name = create_mq_name_for_daemon_bridge(getpid());
     event_loop_.register_aux_mq(
-      create_mq_name_for_daemon_bridge(getpid()), DAEMON_BRIDGE_MQ_MAX_MESSAGES,
-      DAEMON_BRIDGE_MQ_MESSAGE_SIZE);
+      daemon_mq_name, DAEMON_BRIDGE_MQ_MAX_MESSAGES, DAEMON_BRIDGE_MQ_MESSAGE_SIZE);
     event_loop_.set_aux_mq_handler([this](int fd) { this->on_daemon_mq_request(fd); });
+    RCLCPP_INFO(
+      logger_,
+      "Listening on MQ '%s' for daemon-originated bridge requests. "
+      "If cross-IPC-namespace bridges are expected and never appear, verify "
+      "that the discovery agent is running in this IPC namespace "
+      "(ros2 run ros2agnocast_discovery_agent discovery_agent).",
+      daemon_mq_name.c_str());
   } catch (const std::exception & e) {
     RCLCPP_WARN(logger_, "Failed to register daemon bridge MQ: %s", e.what());
   }

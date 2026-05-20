@@ -1,4 +1,4 @@
-// Unit tests for the process-local BridgeFactoryRegistry (F1).
+// Unit tests for the process-local BridgeFactoryRegistry.
 //
 // We do not instantiate real bridge factory functions here — those would
 // require a fully-initialized agnocast runtime (kmod, ioctl, etc.). Instead

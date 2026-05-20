@@ -89,7 +89,7 @@ struct MqMsgPerformanceBridge
   bool is_service;
 };
 
-// Daemon-originated bridge request (F1). Sent by the per-IPC daemon to a
+// Daemon-originated bridge request. Sent by the per-IPC daemon to a
 // bridge_manager in the same IPC namespace. The msg is type-name based so the
 // daemon can fill it without process-specific factory pointers (Standard mode
 // resolves via process-local bridge factory registry; Performance mode resolves

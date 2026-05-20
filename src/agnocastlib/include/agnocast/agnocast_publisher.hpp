@@ -123,7 +123,7 @@ class BasicPublisher
     generate_gid();
     BridgeRequestPolicy::template request_bridge<MessageT>(topic_name_, id_);
     // Register the bridge factory pair for MessageT so daemon-originated bridge
-    // requests (MqMsgDaemonBridge, F1) can be resolved within this process by
+    // requests (MqMsgDaemonBridge) can be resolved within this process by
     // type name alone. No-op for non-message types (gated via SFINAE).
     internal::register_bridge_factory<MessageT>();
     // Announce (topic, type, role, node) to the per-IPC-namespace

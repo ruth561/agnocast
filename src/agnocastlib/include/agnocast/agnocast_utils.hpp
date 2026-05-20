@@ -80,7 +80,7 @@ void validate_ld_preload();
 std::string create_mq_name_for_agnocast_publish(
   const std::string & topic_name, const topic_local_id_t id);
 std::string create_mq_name_for_bridge(const pid_t pid);
-// MQ used by the per-IPC daemon (F1) to ask a bridge_manager to instantiate a
+// MQ used by the per-IPC daemon to ask a bridge_manager to instantiate a
 // bridge. Standard mode: `/agnocast_daemon_bridge@<pid>` (one MQ per user
 // process). Performance mode: `/agnocast_daemon_bridge_perf[_d<ROS_DOMAIN_ID>]`
 // (one MQ per IPC namespace, optionally suffixed with the domain id to mirror

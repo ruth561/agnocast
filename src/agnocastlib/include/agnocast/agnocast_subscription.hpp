@@ -145,7 +145,7 @@ class BasicSubscription : public SubscriptionBase
     id_ = add_subscriber_args.ret_id;
     BridgeRequestPolicy::template request_bridge<MessageT>(topic_name_, id_);
     // Register bridge factory pair for MessageT so daemon-originated bridge
-    // requests can be resolved within this process by type name alone (F1).
+    // requests can be resolved within this process by type name alone.
     // No-op for non-message types (gated via SFINAE).
     internal::register_bridge_factory<MessageT>();
     // Announce (topic, type, role, node) to the per-IPC-namespace discovery
@@ -266,7 +266,7 @@ private:
     id_ = add_subscriber_args.ret_id;
     BridgeRequestPolicy::template request_bridge<MessageT>(topic_name_, id_);
     // Register bridge factory pair for MessageT so daemon-originated bridge
-    // requests can be resolved within this process by type name alone (F1).
+    // requests can be resolved within this process by type name alone.
     // No-op for non-message types (gated via SFINAE).
     internal::register_bridge_factory<MessageT>();
     // Announce (topic, type, role, node) to the per-IPC-namespace discovery
