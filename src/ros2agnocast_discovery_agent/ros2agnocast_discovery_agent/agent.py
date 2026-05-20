@@ -30,6 +30,7 @@ from ros2agnocast_discovery_msgs.msg import (
 )
 
 from . import bridge_decider
+from .type_registry import TypeRegistryReader
 
 
 GOSSIP_TOPIC = '/_agnocast_discovery'
@@ -83,15 +84,24 @@ def _load_ioctl_wrapper():
     return lib
 
 
-def _ioctl_to_endpoint(info: TopicInfoRet) -> AgnocastEndpoint:
+def _ioctl_to_endpoint(
+        info: TopicInfoRet, topic_name: str, role: str,
+        registry: 'TypeRegistryReader' = None) -> AgnocastEndpoint:
     """Convert one ``topic_info_ret`` row to an AgnocastEndpoint msg.
 
-    ``pid`` is best-effort 0 because the existing ioctl does not expose it; the
-    bridge decider may fill it via ``/proc`` walk when routing bridge requests.
+    ``pid`` is looked up from the tmpfs type registry (written by agnocastlib
+    at Publisher/Subscription construction time) using
+    ``(topic_name, role, node_name)`` as the join key. When no match is found
+    the field stays 0, which lets the rest of the pipeline degrade gracefully
+    (the gossip publication still flows; just no pid for that endpoint).
     """
     ep = AgnocastEndpoint()
     ep.node_name = info.node_name.decode('utf-8', errors='replace')
     ep.pid = 0
+    if registry is not None:
+        entry = registry.lookup(topic_name, role, ep.node_name)
+        if entry is not None:
+            ep.pid = entry.pid
     ep.qos_depth = info.qos_depth
     ep.qos_is_transient_local = info.qos_is_transient_local
     ep.qos_is_reliable = info.qos_is_reliable
@@ -99,12 +109,13 @@ def _ioctl_to_endpoint(info: TopicInfoRet) -> AgnocastEndpoint:
     return ep
 
 
-def read_local_topics(lib) -> list:
+def read_local_topics(lib, registry: 'TypeRegistryReader' = None) -> list:
     """Snapshot the current namespace's Agnocast topics via the ioctl wrapper.
 
     Returns a list of AgnocastTopic msgs. The ioctl returns only the caller's
     IPC namespace, so the daemon process just being inside that namespace is
-    sufficient to scope the result.
+    sufficient to scope the result. The optional ``registry`` argument
+    supplies the type names and pids that the ioctl does not expose.
     """
     topic_count = ctypes.c_int()
     topic_names_ptr = lib.get_agnocast_topics(ctypes.byref(topic_count))
@@ -119,12 +130,19 @@ def read_local_topics(lib) -> list:
 
             agnocast_topic = AgnocastTopic()
             agnocast_topic.topic_name = topic_name
-            # type_name is best-effort empty here; resolved by future work
-            # (procfs/topic_info exposing message_type, or kmod ioctl extension)
             agnocast_topic.type_name = ''
             agnocast_topic.domain_id = 0
-            agnocast_topic.publishers = _collect_endpoints(lib.get_agnocast_pub_nodes, lib, topic_name_b)
-            agnocast_topic.subscribers = _collect_endpoints(lib.get_agnocast_sub_nodes, lib, topic_name_b)
+            agnocast_topic.publishers = _collect_endpoints(
+                lib.get_agnocast_pub_nodes, lib, topic_name_b, topic_name, 'pub', registry)
+            agnocast_topic.subscribers = _collect_endpoints(
+                lib.get_agnocast_sub_nodes, lib, topic_name_b, topic_name, 'sub', registry)
+            # Type name comes from the tmpfs registry; any registered
+            # endpoint on this topic carries the same type (ROS 2
+            # invariant), so the first non-empty one wins.
+            if registry is not None:
+                resolved = _resolve_topic_type(agnocast_topic, registry)
+                if resolved:
+                    agnocast_topic.type_name = resolved
             topics.append(agnocast_topic)
     finally:
         lib.free_agnocast_topics(topic_names_ptr, topic_count.value)
@@ -132,7 +150,22 @@ def read_local_topics(lib) -> list:
     return topics
 
 
-def _collect_endpoints(getter, lib, topic_name_b: bytes) -> list:
+def _resolve_topic_type(
+        agnocast_topic: AgnocastTopic, registry: 'TypeRegistryReader') -> str:
+    for ep in agnocast_topic.publishers:
+        entry = registry.lookup(agnocast_topic.topic_name, 'pub', ep.node_name)
+        if entry is not None and entry.type_name:
+            return entry.type_name
+    for ep in agnocast_topic.subscribers:
+        entry = registry.lookup(agnocast_topic.topic_name, 'sub', ep.node_name)
+        if entry is not None and entry.type_name:
+            return entry.type_name
+    return ''
+
+
+def _collect_endpoints(
+        getter, lib, topic_name_b: bytes, topic_name: str, role: str,
+        registry: 'TypeRegistryReader' = None) -> list:
     count = ctypes.c_int()
     array = getter(topic_name_b, ctypes.byref(count))
     endpoints = []
@@ -140,7 +173,7 @@ def _collect_endpoints(getter, lib, topic_name_b: bytes) -> list:
         return endpoints
     try:
         for i in range(count.value):
-            endpoints.append(_ioctl_to_endpoint(array[i]))
+            endpoints.append(_ioctl_to_endpoint(array[i], topic_name, role, registry))
     finally:
         lib.free_agnocast_topic_info_ret(array)
     return endpoints
@@ -182,13 +215,15 @@ class DiscoveryAgent(Node):
     ``(host_uuid, ipc_ns_inode)``.
     """
 
-    def __init__(self, ioctl_lib=None):
+    def __init__(self, ioctl_lib=None, registry: TypeRegistryReader = None):
         super().__init__('agnocast_discovery_agent')
         self._lib = ioctl_lib if ioctl_lib is not None else _load_ioctl_wrapper()
         self._host_uuid = _read_machine_id()
         self._host_hostname = socket.gethostname()
         self._ipc_ns_inode = _read_ipc_ns_inode()
         self._agnocast_version = os.environ.get('AGNOCAST_VERSION', '')
+        self._registry = registry if registry is not None else TypeRegistryReader(
+            self._ipc_ns_inode, logger=self.get_logger())
 
         qos = _gossip_qos()
         self._pub = self.create_publisher(AgnocastDaemonState, GOSSIP_TOPIC, qos)
@@ -203,6 +238,8 @@ class DiscoveryAgent(Node):
             f'hostname={self._host_hostname} ipc_ns_inode={self._ipc_ns_inode}')
 
     def _on_tick(self) -> None:
+        self._registry.rebuild()
+        self._registry.cleanup_dead_pids()
         self._prune_stale_remote_states()
         snapshot = self.publish_snapshot()
         self._dispatch_bridge_requests(snapshot)
@@ -254,7 +291,7 @@ class DiscoveryAgent(Node):
         now = self.get_clock().now().to_msg()
         msg.timestamp = Time(sec=now.sec, nanosec=now.nanosec)
         msg.ipc_ns_inode = self._ipc_ns_inode
-        msg.topics = read_local_topics(self._lib)
+        msg.topics = read_local_topics(self._lib, self._registry)
         return msg
 
     def _on_remote_state(self, msg: AgnocastDaemonState) -> None:
