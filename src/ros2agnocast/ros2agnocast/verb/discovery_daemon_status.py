@@ -15,8 +15,9 @@ Checks performed (each prints OK / NG with detail):
     on the current `ROS_DOMAIN_ID` and a snapshot is received within
     the timeout.
   * **type_registry** — the tmpfs directory
-    `/run/agnocast/<ipc_ns_inode>/` exists and contains at least one
-    `<pid>.txt` (proves at least one Agnocast process has registered).
+    `/dev/shm/agnocast_type_registry/<ipc_ns_inode>/` exists and
+    contains at least one `<pid>.txt` (proves at least one Agnocast
+    process has registered).
 
 Exit code:
 
@@ -36,7 +37,7 @@ from ros2agnocast_discovery_msgs.msg import AgnocastDaemonState
 
 
 _GOSSIP_TOPIC = '/_agnocast_discovery'
-_TYPE_REGISTRY_BASE = '/run/agnocast'
+_TYPE_REGISTRY_BASE = '/dev/shm/agnocast_type_registry'
 
 
 def _self_ipc_ns_inode():

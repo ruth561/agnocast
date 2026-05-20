@@ -1,4 +1,4 @@
-"""Unit tests for the F1 bridge decider.
+"""Unit tests for the bridge decider.
 
 These tests do not require the kmod, DDS, or any POSIX MQ: the decider's
 pure-logic part (`decide_bridges`) is exercised directly, and the wire

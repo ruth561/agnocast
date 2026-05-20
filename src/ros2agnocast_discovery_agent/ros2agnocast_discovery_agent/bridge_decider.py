@@ -1,4 +1,4 @@
-"""F1 bridge decider for the per-IPC-namespace discovery agent.
+"""Bridge decider for the per-IPC-namespace discovery agent.
 
 Compares the local AgnocastDaemonState with remote (cross-NS / cross-ECU)
 snapshots gathered through gossip and emits `MqMsgDaemonBridge` requests

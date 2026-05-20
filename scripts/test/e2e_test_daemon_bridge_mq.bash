@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# E2E regression smoke test for the F1 daemon-originated bridge MQ
+# E2E regression smoke test for the daemon-originated bridge MQ
 # wiring. Verifies that:
 #
 #   * A running bridge_manager (forked by an Agnocast process) creates
@@ -119,18 +119,21 @@ fi
 green "✓ daemon decider tick stayed quiescent with empty remote_states"
 
 # ----- tmpfs type registry populated -----
-# agnocastlib should have created /run/agnocast/<ns>/<pid>.txt with at
-# least the talker's publisher row.
-talker_pid=$(pgrep -f "agnocast_sample_application/.*talker" | head -1)
-ns_inode=$(stat -c '%i' /proc/self/ns/ipc)
-registry_file="/run/agnocast/${ns_inode}/${talker_pid}.txt"
-if [ -z "$talker_pid" ] || [ ! -f "$registry_file" ]; then
-    fail "tmpfs type registry file missing: expected $registry_file"
+# agnocastlib writes /dev/shm/agnocast_type_registry/<ns>/<pid>.txt with a
+# `<topic>\t<type>\t<role>\t<node>` row per Publisher / Subscription
+# construction. We do not pin by pid because (a) `ros2 launch` forks
+# multiple talker copies under the same cmdline (bridge_manager etc.),
+# and (b) the test harness may live in a different IPC namespace from
+# the launched process. Any file under the registry root containing a
+# `/my_topic` row with a concrete type counts.
+registry_file=$(grep -l "/my_topic" /dev/shm/agnocast_type_registry/*/*.txt 2>/dev/null | head -1)
+if [ -z "$registry_file" ] || [ ! -f "$registry_file" ]; then
+    fail "no /dev/shm/agnocast_type_registry/<ns>/<pid>.txt file contains /my_topic"
 fi
-if ! grep -q "/my_topic"$'\t'"std_msgs/msg/" "$registry_file"; then
-    fail "tmpfs type registry has no /my_topic / std_msgs/msg/* entry" "$(cat "$registry_file")"
+if ! grep -q "/my_topic"$'\t'"agnocast_sample_interfaces/msg/" "$registry_file"; then
+    fail "registry has /my_topic but no concrete type" "$(cat "$registry_file")"
 fi
-green "✓ tmpfs type registry has /my_topic with non-empty type"
+green "✓ tmpfs type registry has /my_topic with concrete type ($registry_file)"
 
 # ----- gossip carries the actual type_name (not empty) -----
 # /_agnocast_discovery is RELIABLE+TRANSIENT_LOCAL so a fresh subscriber
@@ -138,13 +141,15 @@ green "✓ tmpfs type registry has /my_topic with non-empty type"
 # observe the registry on its next tick.
 sleep 2
 gossip=$(timeout 5 ros2 topic echo --once /_agnocast_discovery 2>&1 || true)
-if ! grep -q "type_name: std_msgs/msg/" <<<"$gossip"; then
-    fail "gossip msg has no concrete type_name (expected std_msgs/msg/...)" "$gossip"
+if ! grep -q "type_name: agnocast_sample_interfaces/msg/" <<<"$gossip"; then
+    fail "gossip msg has no concrete type_name (expected agnocast_sample_interfaces/msg/...)" "$gossip"
 fi
 green "✓ gossip msg carries concrete type_name"
 
 # ----- gossip carries non-zero pid for the talker endpoint -----
-if ! grep -E "^  pid: [0-9]+" <<<"$gossip" | grep -vE "pid: 0$" > /dev/null; then
+# `ros2 topic echo` indents endpoint fields with 4 spaces in YAML; match
+# any whitespace prefix to stay format-tolerant.
+if ! grep -E "^[[:space:]]+pid: [0-9]+" <<<"$gossip" | grep -vE "pid: 0$" > /dev/null; then
     fail "no AgnocastEndpoint with non-zero pid in gossip" "$gossip"
 fi
 green "✓ gossip msg carries a non-zero endpoint pid"
