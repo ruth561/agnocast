@@ -8,6 +8,7 @@
 #include "agnocast/agnocast_tracepoint_wrapper.h"
 #include "agnocast/agnocast_utils.hpp"
 #include "agnocast/internal/bridge_factory_registry.hpp"
+#include "agnocast/internal/type_registry_writer.hpp"
 #include "rclcpp/detail/qos_parameters.hpp"
 #include "rclcpp/rclcpp.hpp"
 
@@ -137,9 +138,9 @@ class BasicSubscription : public SubscriptionBase
 
     validate_subscription_qos(actual_qos);
 
-    union ioctl_add_subscriber_args add_subscriber_args = initialize(
-      actual_qos, false, options.ignore_local_publications, is_bridge,
-      node->get_fully_qualified_name());
+    const std::string node_name = node->get_fully_qualified_name();
+    union ioctl_add_subscriber_args add_subscriber_args =
+      initialize(actual_qos, false, options.ignore_local_publications, is_bridge, node_name);
 
     id_ = add_subscriber_args.ret_id;
     BridgeRequestPolicy::template request_bridge<MessageT>(topic_name_, id_);
@@ -147,6 +148,13 @@ class BasicSubscription : public SubscriptionBase
     // requests can be resolved within this process by type name alone (F1).
     // No-op for non-message types (gated via SFINAE).
     internal::register_bridge_factory<MessageT>();
+    // Announce (topic, type, role, node) to the per-IPC-namespace discovery
+    // agent. Gated to message types — service types pulled in by
+    // BasicService<ServiceT> have no rosidl message name.
+    if constexpr (rosidl_generator_traits::is_message<MessageT>::value) {
+      internal::TypeRegistryWriter::instance().register_type(
+        topic_name_, rosidl_generator_traits::name<MessageT>(), "sub", node_name);
+    }
 
     mqd_t mq = open_mq_for_subscription(topic_name_, id_, mq_subscription_);
 
@@ -251,8 +259,9 @@ private:
 
     validate_subscription_qos(actual_qos);
 
-    union ioctl_add_subscriber_args add_subscriber_args = initialize(
-      actual_qos, true, options.ignore_local_publications, false, node->get_fully_qualified_name());
+    const std::string node_name = node->get_fully_qualified_name();
+    union ioctl_add_subscriber_args add_subscriber_args =
+      initialize(actual_qos, true, options.ignore_local_publications, false, node_name);
 
     id_ = add_subscriber_args.ret_id;
     BridgeRequestPolicy::template request_bridge<MessageT>(topic_name_, id_);
@@ -260,6 +269,13 @@ private:
     // requests can be resolved within this process by type name alone (F1).
     // No-op for non-message types (gated via SFINAE).
     internal::register_bridge_factory<MessageT>();
+    // Announce (topic, type, role, node) to the per-IPC-namespace discovery
+    // agent. Gated to message types — service types pulled in by
+    // BasicService<ServiceT> have no rosidl message name.
+    if constexpr (rosidl_generator_traits::is_message<MessageT>::value) {
+      internal::TypeRegistryWriter::instance().register_type(
+        topic_name_, rosidl_generator_traits::name<MessageT>(), "sub", node_name);
+    }
 
     return actual_qos;
   }

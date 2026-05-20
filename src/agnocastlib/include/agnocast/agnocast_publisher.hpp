@@ -7,6 +7,7 @@
 #include "agnocast/agnocast_tracepoint_wrapper.h"
 #include "agnocast/agnocast_utils.hpp"
 #include "agnocast/internal/bridge_factory_registry.hpp"
+#include "agnocast/internal/type_registry_writer.hpp"
 #include "rclcpp/detail/qos_parameters.hpp"
 #include "rclcpp/rclcpp.hpp"
 
@@ -117,14 +118,22 @@ class BasicPublisher
 
     validate_publisher_qos(actual_qos);
 
-    id_ =
-      initialize_publisher(topic_name_, node->get_fully_qualified_name(), actual_qos, is_bridge);
+    const std::string node_name = node->get_fully_qualified_name();
+    id_ = initialize_publisher(topic_name_, node_name, actual_qos, is_bridge);
     generate_gid();
     BridgeRequestPolicy::template request_bridge<MessageT>(topic_name_, id_);
     // Register the bridge factory pair for MessageT so daemon-originated bridge
     // requests (MqMsgDaemonBridge, F1) can be resolved within this process by
     // type name alone. No-op for non-message types (gated via SFINAE).
     internal::register_bridge_factory<MessageT>();
+    // Announce (topic, type, role, node) to the per-IPC-namespace
+    // discovery agent via the tmpfs registry so it can fill in type_name +
+    // pid on the gossip publication. Gated to message types only — service
+    // types pulled in by BasicService<ServiceT> have no rosidl message name.
+    if constexpr (rosidl_generator_traits::is_message<MessageT>::value) {
+      internal::TypeRegistryWriter::instance().register_type(
+        topic_name_, rosidl_generator_traits::name<MessageT>(), "pub", node_name);
+    }
 
     return actual_qos;
   }
