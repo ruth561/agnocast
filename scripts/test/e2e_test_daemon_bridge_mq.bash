@@ -118,5 +118,36 @@ if ! ls /dev/mqueue/agnocast_daemon_bridge@* > /dev/null 2>&1; then
 fi
 green "✓ daemon decider tick stayed quiescent with empty remote_states"
 
+# ----- tmpfs type registry populated -----
+# agnocastlib should have created /run/agnocast/<ns>/<pid>.txt with at
+# least the talker's publisher row.
+talker_pid=$(pgrep -f "agnocast_sample_application/.*talker" | head -1)
+ns_inode=$(stat -c '%i' /proc/self/ns/ipc)
+registry_file="/run/agnocast/${ns_inode}/${talker_pid}.txt"
+if [ -z "$talker_pid" ] || [ ! -f "$registry_file" ]; then
+    fail "tmpfs type registry file missing: expected $registry_file"
+fi
+if ! grep -q "/my_topic"$'\t'"std_msgs/msg/" "$registry_file"; then
+    fail "tmpfs type registry has no /my_topic / std_msgs/msg/* entry" "$(cat "$registry_file")"
+fi
+green "✓ tmpfs type registry has /my_topic with non-empty type"
+
+# ----- gossip carries the actual type_name (not empty) -----
+# /_agnocast_discovery is RELIABLE+TRANSIENT_LOCAL so a fresh subscriber
+# can read the latest snapshot. Allow a short window for the daemon to
+# observe the registry on its next tick.
+sleep 2
+gossip=$(timeout 5 ros2 topic echo --once /_agnocast_discovery 2>&1 || true)
+if ! grep -q "type_name: std_msgs/msg/" <<<"$gossip"; then
+    fail "gossip msg has no concrete type_name (expected std_msgs/msg/...)" "$gossip"
+fi
+green "✓ gossip msg carries concrete type_name"
+
+# ----- gossip carries non-zero pid for the talker endpoint -----
+if ! grep -E "^  pid: [0-9]+" <<<"$gossip" | grep -vE "pid: 0$" > /dev/null; then
+    fail "no AgnocastEndpoint with non-zero pid in gossip" "$gossip"
+fi
+green "✓ gossip msg carries a non-zero endpoint pid"
+
 green ""
 green "===== ALL CHECKS PASSED ====="
