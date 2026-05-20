@@ -17,7 +17,6 @@ intentionally simple and additive (see `agnocast_mq.hpp`).
 
 import ctypes
 import errno
-import glob
 import os
 import struct
 from dataclasses import dataclass
@@ -76,6 +75,7 @@ class BridgeRequest:
     qos_depth: int
     qos_is_transient_local: bool
     qos_is_reliable: bool
+    target_pid: int  # Standard-mode target bridge_manager pid; 0 = unknown.
 
 
 def serialize_request(req: BridgeRequest) -> bytes:
@@ -135,6 +135,8 @@ def decide_bridges(local_state, remote_states) -> list:
 
             # Local Agnocast publisher + remote Agnocast subscriber -> A2R
             # bridge here so the local publisher's data reaches ROS 2 (DDS).
+            # Target pid = local publisher pid so Standard-mode dispatch
+            # hits exactly the user process holding the factory.
             if local_pubs and remote_subs:
                 qos_source = local_pubs[0]
                 key = (local_topic.topic_name, DIRECTION_AGNOCAST_TO_ROS2)
@@ -147,6 +149,7 @@ def decide_bridges(local_state, remote_states) -> list:
                         qos_depth=qos_source.qos_depth,
                         qos_is_transient_local=qos_source.qos_is_transient_local,
                         qos_is_reliable=qos_source.qos_is_reliable,
+                        target_pid=qos_source.pid,
                     ),
                 )
 
@@ -164,22 +167,16 @@ def decide_bridges(local_state, remote_states) -> list:
                         qos_depth=qos_source.qos_depth,
                         qos_is_transient_local=qos_source.qos_is_transient_local,
                         qos_is_reliable=qos_source.qos_is_reliable,
+                        target_pid=qos_source.pid,
                     ),
                 )
 
     return list(requests.values())
 
 
-def _enumerate_standard_mq_names() -> list:
-    """Return paths under `/dev/mqueue/` matching the Standard daemon bridge MQ name.
-
-    The bridge_manager creates `/agnocast_daemon_bridge@<pid>` on startup,
-    so the daemon discovers running managers by scanning `/dev/mqueue`.
-    """
-    return [
-        '/' + os.path.basename(path)
-        for path in glob.glob('/dev/mqueue/agnocast_daemon_bridge@*')
-    ]
+def _standard_mq_name(pid: int) -> str:
+    """Return the Standard-mode bridge_manager MQ name for a given user pid."""
+    return f'/agnocast_daemon_bridge@{pid}'
 
 
 def _performance_mq_name() -> str:
@@ -218,15 +215,30 @@ def send_request(mq_name: str, payload: bytes) -> Optional[str]:
 
 
 def dispatch_requests(requests: Iterable[BridgeRequest], logger=None) -> None:
-    """Send every request to the Performance MQ and to every Standard MQ."""
+    """Send every request to the Performance MQ and to the target Standard MQ.
+
+    Standard-mode targeting: each request carries the pid of the local
+    user process whose `Publisher<T>` / `Subscription<T>` registered the
+    factory in this process (via the tmpfs type registry). The daemon
+    sends only to that pid's `/agnocast_daemon_bridge@<pid>` MQ —
+    avoiding the broadcast hack that the previous design needed when
+    pid was unknown.
+
+    Performance mode uses a single per-NS MQ (`pid` is irrelevant there).
+    A request with `target_pid == 0` (no matching registry entry) is
+    delivered only to the Performance MQ; Standard-mode managers don't
+    receive it.
+    """
     requests = list(requests)
     if not requests:
         return
 
-    targets = [_performance_mq_name()] + _enumerate_standard_mq_names()
+    perf_mq = _performance_mq_name()
     for req in requests:
         payload = serialize_request(req)
-        for mq_name in targets:
-            err = send_request(mq_name, payload)
-            if err is not None and logger is not None:
+        if (err := send_request(perf_mq, payload)) is not None and logger is not None:
+            logger.warning('daemon bridge dispatch failed: %s', err)
+        if req.target_pid > 0:
+            std_mq = _standard_mq_name(req.target_pid)
+            if (err := send_request(std_mq, payload)) is not None and logger is not None:
                 logger.warning('daemon bridge dispatch failed: %s', err)

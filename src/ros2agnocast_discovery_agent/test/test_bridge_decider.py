@@ -176,6 +176,7 @@ def test_serialize_wire_format_matches_cpp_struct_size():
         qos_depth=10,
         qos_is_transient_local=False,
         qos_is_reliable=True,
+        target_pid=0,
     )
     payload = serialize_request(req)
     # sizeof(MqMsgDaemonBridge) on x86_64 Linux with GCC: 524 bytes.
@@ -190,6 +191,7 @@ def test_serialize_truncates_oversized_topic_name():
         qos_depth=10,
         qos_is_transient_local=False,
         qos_is_reliable=True,
+        target_pid=0,
     )
     payload = serialize_request(req)
     # The topic_name field is the first 256 bytes; the last byte must be a
@@ -205,6 +207,7 @@ def test_serialize_packs_qos_flags():
         qos_depth=7,
         qos_is_transient_local=True,
         qos_is_reliable=True,
+        target_pid=0,
     )
     payload = serialize_request(req)
     # direction is uint32_t at offset 512; qos_depth at 516; flags at 520/521.
@@ -215,3 +218,76 @@ def test_serialize_packs_qos_flags():
     assert depth == 7
     assert transient == 1
     assert reliable == 1
+
+
+def test_decide_carries_local_publisher_pid_as_a2r_target():
+    local = _state(
+        topics=[_topic('/x', pubs=[_endpoint('/pub', pid=4242)])],
+    )
+    remote = _state(
+        host_uuid='OTHER', ipc_ns=222,
+        topics=[_topic('/x', subs=[_endpoint('/sub')])],
+    )
+    reqs = decide_bridges(local, {('OTHER', 222): remote})
+    assert len(reqs) == 1
+    assert reqs[0].direction == DIRECTION_AGNOCAST_TO_ROS2
+    assert reqs[0].target_pid == 4242
+
+
+def test_decide_carries_local_subscriber_pid_as_r2a_target():
+    local = _state(topics=[_topic('/x', subs=[_endpoint('/sub', pid=7777)])])
+    remote = _state(
+        host_uuid='OTHER', ipc_ns=222,
+        topics=[_topic('/x', pubs=[_endpoint('/pub')])],
+    )
+    reqs = decide_bridges(local, {('OTHER', 222): remote})
+    assert len(reqs) == 1
+    assert reqs[0].direction == DIRECTION_ROS2_TO_AGNOCAST
+    assert reqs[0].target_pid == 7777
+
+
+def test_dispatch_sends_to_targeted_standard_mq_when_pid_known(monkeypatch):
+    """Standard-mode dispatch must target `/agnocast_daemon_bridge@<pid>` only."""
+    from ros2agnocast_discovery_agent import bridge_decider as bd
+
+    sent = []
+    monkeypatch.setattr(bd, 'send_request', lambda mq, payload: sent.append(mq) or None)
+
+    req = BridgeRequest(
+        topic_name='/x',
+        type_name='T',
+        direction=DIRECTION_AGNOCAST_TO_ROS2,
+        qos_depth=1,
+        qos_is_transient_local=False,
+        qos_is_reliable=True,
+        target_pid=12345,
+    )
+    bd.dispatch_requests([req])
+    # Expect Performance MQ + Standard MQ targeted by pid; no broadcast.
+    assert any(name.startswith('/agnocast_daemon_bridge_perf') for name in sent)
+    assert '/agnocast_daemon_bridge@12345' in sent
+    # Sanity: no other Standard-mode MQs hit.
+    standard_targets = [n for n in sent if n.startswith('/agnocast_daemon_bridge@')]
+    assert standard_targets == ['/agnocast_daemon_bridge@12345']
+
+
+def test_dispatch_skips_standard_mq_when_pid_zero(monkeypatch):
+    """target_pid=0 means we don't know the user process -> Performance MQ only."""
+    from ros2agnocast_discovery_agent import bridge_decider as bd
+
+    sent = []
+    monkeypatch.setattr(bd, 'send_request', lambda mq, payload: sent.append(mq) or None)
+
+    req = BridgeRequest(
+        topic_name='/x',
+        type_name='T',
+        direction=DIRECTION_AGNOCAST_TO_ROS2,
+        qos_depth=1,
+        qos_is_transient_local=False,
+        qos_is_reliable=True,
+        target_pid=0,
+    )
+    bd.dispatch_requests([req])
+    assert any(name.startswith('/agnocast_daemon_bridge_perf') for name in sent)
+    standard_targets = [n for n in sent if n.startswith('/agnocast_daemon_bridge@')]
+    assert standard_targets == []
