@@ -111,24 +111,10 @@ private:
   std::unordered_map<std::string, BridgeFactoryEntry> map_;
 };
 
-// Mirrors a successful local `register_bridge_factory<T>()` to the
-// Standard-mode bridge_manager via a small POSIX MQ write.
-//
-// We can't send raw function pointers because the function may live in a
-// shared library dlopen()'d *after* the bridge_manager was forked
-// (composable_node case). Instead we resolve the function via `dladdr`
-// to (shared_lib_path, offset-from-base) and let the bridge_manager
-// dlopen the same library and reconstruct the address. This mirrors the
-// existing intra-NS MqMsgBridge / BridgeFactoryInfo flow.
-//
-// Best-effort: any failure (dladdr / mq_open / mq_send) is logged once and
-// the user process continues. The daemon path will silently no-op for
-// this type until a working pre-registration lands.
-//
-// TODO: Replace with a `need-minor-update` kmod path that exposes the
-// message type alongside the existing topic / node info so the
-// bridge_manager can pre-populate its registry directly from the kmod and
-// retire this MQ entirely.
+// Sender side of MqMsgFactoryRegister (see the struct's doc comment in
+// agnocast_mq.hpp for the why). Best-effort: any failure is logged once
+// and the caller continues — cross-IPC-NS bridge generation just stays
+// disabled for this type until something fixes the underlying error.
 template <typename MessageT>
 inline void notify_bridge_manager_of_factory(const std::string & type_name)
 {

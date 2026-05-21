@@ -109,40 +109,27 @@ struct MqMsgDaemonBridge
   bool qos_is_reliable;
 };
 
-// Sent from the user process to its Standard-mode bridge_manager whenever a
-// new `Publisher<T>` or `Subscription<T>` is constructed. The bridge_manager
-// is a child process forked from this same user process by
-// `agnocast::init()` — but the fork happens *before* user code creates
-// the Publisher / Subscription, so the bridge_manager's
-// `BridgeFactoryRegistry` is empty by default and a daemon-originated
-// `MqMsgDaemonBridge` for type `T` is silently skipped with the WARN
-// `no factory registered in this process`.
+// User process → Standard-mode bridge_manager pre-registration of the
+// factory pair backing each `register_bridge_factory<T>()` call. The
+// bridge_manager is forked from the user process by `agnocast::init()`
+// *before* Publisher / Subscription ctors run, so it inherits an empty
+// BridgeFactoryRegistry and needs to be told about every type the parent
+// later registers. We don't send raw function pointers because
+// composable_node libraries (e.g. `libagnocast_listener_component.so`)
+// are typically dlopen()'d in the parent *after* the fork, so the
+// addresses live in pages the bridge_manager has never mapped; we send
+// (shared_lib_path, fn_offset_*) so the bridge_manager can dlopen the
+// same library and reconstruct the address as `base + offset`. Same
+// shape as the existing intra-NS MqMsgBridge / BridgeFactoryInfo path.
 //
-// We can't just send raw function pointers because composable_node
-// libraries (e.g. listener_component.so) are dlopen()'d in the user
-// process *after* fork: the resulting template instantiations live in
-// pages that exist only in the parent's address space, and the
-// bridge_manager would segfault on call. Instead we send (shared_lib_path,
-// fn_offset_*) tuples — the bridge_manager dlopens the same library and
-// reconstructs the address as `base + offset`. This mirrors the existing
-// intra-NS MqMsgBridge / BridgeFactoryInfo pattern.
-//
-// TODO: Replace with a `need-minor-update` kmod-based design when the
-// agnocastlib ↔ kmod ABI is bumped — the kmod can expose the message type
-// alongside the existing topic / node info and the bridge_manager can
-// pre-populate its registry directly from the kmod, removing the need for
-// this user → bridge_manager MQ entirely.
+// TODO: When the next `need-minor-update` release bumps the
+// agnocastlib ↔ kmod ABI, carry the message type through the kmod
+// alongside topic / node info; the bridge_manager can then pre-populate
+// its registry directly from the kmod and this MQ can go away.
 struct MqMsgFactoryRegister
 {
   char type_name[MESSAGE_TYPE_BUFFER_SIZE];
-  // Path to the shared library (or main executable) hosting the template
-  // instantiations of `start_a2r_pubsub_node<T>` / `start_r2a_pubsub_node<T>`.
-  // Obtained on the user side via `dladdr`.
   char shared_lib_path[SHARED_LIB_PATH_BUFFER_SIZE];
-  // Offsets from the library's load base address. The bridge_manager
-  // dlopen()s the library, reads its base via `dlinfo(RTLD_DI_LINKMAP)`,
-  // and computes `base + offset` to get the function address valid in
-  // *its own* address space.
   uintptr_t fn_offset_a2r;
   uintptr_t fn_offset_r2a;
 };

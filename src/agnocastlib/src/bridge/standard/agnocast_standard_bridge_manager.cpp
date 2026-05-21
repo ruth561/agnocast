@@ -93,21 +93,10 @@ void StandardBridgeManager::run()
     RCLCPP_WARN(logger_, "Failed to register daemon bridge MQ: %s", e.what());
   }
 
-  // Register the user-process factory pre-registration MQ
-  // (`/agnocast_factory_register@<pid>`). The bridge_manager is a fork()
-  // child of the user process, so the user's Publisher<T> / Subscription<T>
-  // constructors run *after* this fork and the local BridgeFactoryRegistry
-  // here is empty by default — factory registrations performed in the
-  // parent after fork do not propagate. The user process therefore mirrors
-  // each register_bridge_factory<T>() call into this MQ so the bridge_manager
-  // can populate its own registry. Without this, daemon-originated bridge
-  // requests for any type land with the WARN
-  // "no factory registered in this process" and bridges never come up.
-  //
-  // TODO: Replace with kmod-side type info when a need-minor-update release
-  // becomes available — the kmod can carry the message type alongside the
-  // existing topic / node info and the bridge_manager would pre-populate
-  // its registry directly from there, retiring this MQ.
+  // Receiver side of MqMsgFactoryRegister (see the struct's doc comment
+  // for the why). Without this MQ the bridge_manager's local
+  // BridgeFactoryRegistry stays empty and every daemon-originated bridge
+  // request lands on the "no factory registered in this process" WARN.
   try {
     const auto factory_mq_name = create_mq_name_for_factory_register(getpid());
     event_loop_.register_aux_mq(
@@ -186,13 +175,10 @@ void StandardBridgeManager::on_daemon_mq_request(mqd_t fd)
 
 void StandardBridgeManager::on_factory_register_request(mqd_t fd)
 {
-  // The user process sends (type_name, shared_lib_path, fn_offset_a2r,
-  // fn_offset_r2a). We dlopen the library here (it may have been loaded
-  // post-fork via composable_node and so is absent from our address
-  // space), read its load base via dlinfo, and reconstruct each factory
-  // function's address as `base + offset`. The address is then stored as
-  // a raw function pointer in our own BridgeFactoryRegistry so the
-  // daemon-originated MqMsgDaemonBridge handler can resolve and call it.
+  // dlopen the library named in the message (in addition to letting us
+  // reconstruct the function address by offset, this is what brings the
+  // library into our address space when it was only dlopen()'d in the
+  // parent post-fork — e.g. composable_node libraries).
   using StartFn = std::shared_ptr<PubsubBridgeBase> (*)(
     rclcpp::Node::SharedPtr, const std::string &, const rclcpp::QoS &);
 
