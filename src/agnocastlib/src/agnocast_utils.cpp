@@ -103,6 +103,11 @@ std::string create_mq_name_for_daemon_bridge(const pid_t pid)
   return std::string(DAEMON_BRIDGE_MQ_PREFIX) + "@" + std::to_string(pid);
 }
 
+std::string create_mq_name_for_factory_register(const pid_t pid)
+{
+  return std::string(FACTORY_REGISTER_MQ_PREFIX) + "@" + std::to_string(pid);
+}
+
 uint64_t get_self_ipc_ns_inode()
 {
   struct stat st

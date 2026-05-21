@@ -86,6 +86,16 @@ std::string create_mq_name_for_bridge(const pid_t pid);
 // (one MQ per IPC namespace, optionally suffixed with the domain id to mirror
 // the existing Performance bridge MQ naming).
 std::string create_mq_name_for_daemon_bridge(const pid_t pid);
+// MQ used by user processes to pre-register bridge factory function pointers
+// in the bridge_manager forked from them (Standard mode only). One MQ per
+// user process, named with the bridge_manager's pid. See
+// `MqMsgFactoryRegister` for the protocol and the rationale.
+//
+// TODO: Replace with a `need-minor-update` kmod path that exposes the
+// message type alongside the existing topic / node info — that would let
+// the bridge_manager pre-populate its registry directly from the kmod and
+// retire this MQ entirely.
+std::string create_mq_name_for_factory_register(const pid_t pid);
 std::string create_shm_name(const pid_t pid);
 // Return the inode number of the calling process's IPC namespace
 // (`/proc/self/ns/ipc`). Used by the type registry writer/reader as the

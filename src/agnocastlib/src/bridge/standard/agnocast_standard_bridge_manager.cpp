@@ -76,8 +76,8 @@ void StandardBridgeManager::run()
   try {
     const auto daemon_mq_name = create_mq_name_for_daemon_bridge(getpid());
     event_loop_.register_aux_mq(
-      daemon_mq_name, DAEMON_BRIDGE_MQ_MAX_MESSAGES, DAEMON_BRIDGE_MQ_MESSAGE_SIZE);
-    event_loop_.set_aux_mq_handler([this](int fd) { this->on_daemon_mq_request(fd); });
+      daemon_mq_name, DAEMON_BRIDGE_MQ_MAX_MESSAGES, DAEMON_BRIDGE_MQ_MESSAGE_SIZE,
+      [this](int fd) { this->on_daemon_mq_request(fd); });
     RCLCPP_INFO(
       logger_,
       "Listening on MQ '%s' for daemon-originated bridge requests. "
@@ -87,6 +87,33 @@ void StandardBridgeManager::run()
       daemon_mq_name.c_str());
   } catch (const std::exception & e) {
     RCLCPP_WARN(logger_, "Failed to register daemon bridge MQ: %s", e.what());
+  }
+
+  // Register the user-process factory pre-registration MQ
+  // (`/agnocast_factory_register@<pid>`). The bridge_manager is a fork()
+  // child of the user process, so the user's Publisher<T> / Subscription<T>
+  // constructors run *after* this fork and the local BridgeFactoryRegistry
+  // here is empty by default — factory registrations performed in the
+  // parent after fork do not propagate. The user process therefore mirrors
+  // each register_bridge_factory<T>() call into this MQ so the bridge_manager
+  // can populate its own registry. Without this, daemon-originated bridge
+  // requests for any type land with the WARN
+  // "no factory registered in this process" and bridges never come up.
+  //
+  // TODO: Replace with kmod-side type info when a need-minor-update release
+  // becomes available — the kmod can carry the message type alongside the
+  // existing topic / node info and the bridge_manager would pre-populate
+  // its registry directly from there, retiring this MQ.
+  try {
+    const auto factory_mq_name = create_mq_name_for_factory_register(getpid());
+    event_loop_.register_aux_mq(
+      factory_mq_name, FACTORY_REGISTER_MQ_MAX_MESSAGES, FACTORY_REGISTER_MQ_MESSAGE_SIZE,
+      [this](int fd) { this->on_factory_register_request(fd); });
+    RCLCPP_INFO(
+      logger_, "Listening on MQ '%s' for user-process factory pre-registrations.",
+      factory_mq_name.c_str());
+  } catch (const std::exception & e) {
+    RCLCPP_WARN(logger_, "Failed to register factory register MQ: %s", e.what());
   }
 
   while (!shutdown_requested_) {
@@ -150,6 +177,38 @@ void StandardBridgeManager::on_daemon_mq_request(mqd_t fd)
       break;
     }
     create_daemon_pubsub_bridge_if_needed(req);
+  }
+}
+
+void StandardBridgeManager::on_factory_register_request(mqd_t fd)
+{
+  // Type aliases that match the template signatures of
+  // `agnocast::start_a2r_pubsub_node<T>` / `start_r2a_pubsub_node<T>`. The
+  // user process sends these as raw uintptr_t in the MqMsgFactoryRegister
+  // message; we recast and stash them in this process's
+  // BridgeFactoryRegistry, keyed by type_name, so daemon-originated
+  // MqMsgDaemonBridge requests can resolve them later.
+  using StartFn = std::shared_ptr<PubsubBridgeBase> (*)(
+    rclcpp::Node::SharedPtr, const std::string &, const rclcpp::QoS &);
+
+  MqMsgFactoryRegister req{};
+  while (mq_receive(fd, reinterpret_cast<char *>(&req), sizeof(req), nullptr) > 0) {
+    if (shutdown_requested_) {
+      break;
+    }
+    const std::string type_name = static_cast<const char *>(req.type_name);
+    if (type_name.empty() || req.fn_a2r == 0 || req.fn_r2a == 0) {
+      RCLCPP_WARN(
+        logger_, "Skipping malformed factory register msg (type='%s', a2r=%p, r2a=%p).",
+        type_name.c_str(), reinterpret_cast<void *>(req.fn_a2r),
+        reinterpret_cast<void *>(req.fn_r2a));
+      continue;
+    }
+    auto fn_a2r = reinterpret_cast<StartFn>(req.fn_a2r);
+    auto fn_r2a = reinterpret_cast<StartFn>(req.fn_r2a);
+    internal::BridgeFactoryEntry entry{fn_a2r, fn_r2a};
+    internal::BridgeFactoryRegistry::instance().register_entry(type_name, std::move(entry));
+    RCLCPP_INFO(logger_, "Registered factory for type '%s'.", type_name.c_str());
   }
 }
 

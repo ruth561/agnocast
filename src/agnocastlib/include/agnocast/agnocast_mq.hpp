@@ -109,6 +109,36 @@ struct MqMsgDaemonBridge
   bool qos_is_reliable;
 };
 
+// Sent from the user process to its Standard-mode bridge_manager whenever a
+// new `Publisher<T>` or `Subscription<T>` is constructed. The bridge_manager
+// is a child process forked from this same user process by
+// `agnocast::init()`, so it shares the user's address-space layout (the
+// shared library hosting the factory templates is mapped at the same
+// addresses on both sides). Function pointers obtained in the user process
+// are therefore valid to call from the bridge_manager process.
+//
+// Without this pre-registration, the bridge_manager's
+// `BridgeFactoryRegistry` is empty (the registration `register_bridge_factory<T>()`
+// happens *after* the fork) and a daemon-originated `MqMsgDaemonBridge`
+// arriving for type `T` is silently skipped with the WARN
+// `no factory registered in this process`.
+//
+// TODO: Replace with a `need-minor-update` kmod-based design when the
+// agnocastlib ↔ kmod ABI is bumped — the kmod can expose the message type
+// alongside the existing topic / node info and the bridge_manager can
+// pre-populate its registry directly from the kmod, removing the need for
+// this user → bridge_manager MQ entirely.
+struct MqMsgFactoryRegister
+{
+  char type_name[MESSAGE_TYPE_BUFFER_SIZE];
+  // Pointers to `start_a2r_pubsub_node<T>` / `start_r2a_pubsub_node<T>`
+  // template instantiations. Stored as uintptr_t for portability; recast
+  // to the appropriate function pointer type in the bridge_manager
+  // handler.
+  uintptr_t fn_a2r;
+  uintptr_t fn_r2a;
+};
+
 constexpr int64_t BRIDGE_MQ_MAX_MESSAGES = 2;
 constexpr int64_t PERFORMANCE_BRIDGE_MQ_MAX_MESSAGES = 256;
 // Kept at or below the kernel default `/proc/sys/fs/mqueue/msg_max = 10`,
@@ -121,6 +151,11 @@ constexpr int64_t DAEMON_BRIDGE_MQ_MAX_MESSAGES = 8;
 constexpr int64_t BRIDGE_MQ_MESSAGE_SIZE = sizeof(MqMsgBridge);
 constexpr int64_t PERFORMANCE_BRIDGE_MQ_MESSAGE_SIZE = sizeof(MqMsgPerformanceBridge);
 constexpr int64_t DAEMON_BRIDGE_MQ_MESSAGE_SIZE = sizeof(MqMsgDaemonBridge);
+// Same kernel-default ceiling reasoning as DAEMON_BRIDGE_MQ_MAX_MESSAGES.
+// One write per `Publisher<T>` / `Subscription<T>` construction; bursts at
+// node startup are bounded by the number of pub/sub endpoints in the node.
+constexpr int64_t FACTORY_REGISTER_MQ_MAX_MESSAGES = 8;
+constexpr int64_t FACTORY_REGISTER_MQ_MESSAGE_SIZE = sizeof(MqMsgFactoryRegister);
 constexpr mode_t BRIDGE_MQ_PERMS = 0600;
 
 // MQ name conventions for daemon-originated bridge requests.
@@ -129,5 +164,11 @@ constexpr mode_t BRIDGE_MQ_PERMS = 0600;
 // - Performance mode: `/agnocast_daemon_bridge_perf` (one MQ per IPC namespace).
 inline constexpr const char * DAEMON_BRIDGE_MQ_PREFIX = "/agnocast_daemon_bridge";
 inline constexpr const char * PERFORMANCE_DAEMON_BRIDGE_MQ_NAME = "/agnocast_daemon_bridge_perf";
+
+// MQ name for the user → bridge_manager factory pre-registration channel.
+// One MQ per Standard-mode bridge_manager (= per user process).
+// TODO: Replace with kmod-side type info when MqMsgFactoryRegister itself
+// becomes unnecessary (see comment on the struct above).
+inline constexpr const char * FACTORY_REGISTER_MQ_PREFIX = "/agnocast_factory_register";
 
 }  // namespace agnocast

@@ -30,10 +30,21 @@
 
 #pragma once
 
+#include "agnocast/agnocast_mq.hpp"
+#include "agnocast/agnocast_utils.hpp"
+
+#include <rclcpp/logger.hpp>
+#include <rclcpp/logging.hpp>
 #include <rclcpp/node.hpp>
 #include <rclcpp/qos.hpp>
 #include <rosidl_runtime_cpp/traits.hpp>
 
+#include <fcntl.h>
+#include <mqueue.h>
+
+#include <cerrno>
+#include <cstdint>
+#include <cstring>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -99,6 +110,69 @@ private:
   std::unordered_map<std::string, BridgeFactoryEntry> map_;
 };
 
+// Mirrors a successful local `register_bridge_factory<T>()` to the
+// Standard-mode bridge_manager via a tiny POSIX MQ write. The bridge_manager
+// is a fork() child of this user process, so the addresses of
+// `start_a2r_pubsub_node<T>` / `start_r2a_pubsub_node<T>` are valid in its
+// address space (same shared library at same offsets). The bridge_manager
+// stores those raw function pointers in its own BridgeFactoryRegistry and
+// uses them to honour daemon-originated `MqMsgDaemonBridge` requests.
+// Best-effort: any MQ failure is logged once and the user process continues
+// (the daemon path will silently no-op for this type until a working
+// bridge_manager picks the registration up).
+//
+// TODO: Replace with a `need-minor-update` kmod path that exposes the
+// message type alongside the existing topic / node info so the
+// bridge_manager can pre-populate its registry directly from the kmod and
+// retire this MQ entirely.
+template <typename MessageT>
+inline void notify_bridge_manager_of_factory(const std::string & type_name)
+{
+  if (standard_bridge_manager_pid <= 0) {
+    // Either bridge_manager has not been spawned yet (early static init?)
+    // or this process is running in Performance mode where the
+    // bridge_manager is a different process model.
+    return;
+  }
+
+  const std::string mq_name = create_mq_name_for_factory_register(standard_bridge_manager_pid);
+
+  struct mq_attr attr = {};
+  attr.mq_maxmsg = FACTORY_REGISTER_MQ_MAX_MESSAGES;
+  attr.mq_msgsize = FACTORY_REGISTER_MQ_MESSAGE_SIZE;
+
+  // O_CREAT so that the user process can race the bridge_manager — whichever
+  // side opens first creates the MQ. The kernel returns the existing MQ on
+  // subsequent calls.
+  mqd_t fd = mq_open(
+    mq_name.c_str(), O_WRONLY | O_CREAT | O_NONBLOCK | O_CLOEXEC, BRIDGE_MQ_PERMS, &attr);
+  if (fd == (mqd_t)-1) {
+    RCLCPP_WARN_ONCE(
+      rclcpp::get_logger("agnocast"),
+      "Failed to open factory register MQ '%s': %s. Cross-IPC-NS bridges for "
+      "this process will not be auto-generated until this succeeds.",
+      mq_name.c_str(), std::strerror(errno));
+    return;
+  }
+
+  MqMsgFactoryRegister msg{};
+  std::strncpy(msg.type_name, type_name.c_str(), sizeof(msg.type_name) - 1);
+  msg.fn_a2r = reinterpret_cast<uintptr_t>(&start_a2r_pubsub_node<MessageT>);
+  msg.fn_r2a = reinterpret_cast<uintptr_t>(&start_r2a_pubsub_node<MessageT>);
+
+  if (mq_send(fd, reinterpret_cast<const char *>(&msg), sizeof(msg), 0) == -1) {
+    RCLCPP_WARN_ONCE(
+      rclcpp::get_logger("agnocast"),
+      "Failed to send factory register msg for type '%s' on MQ '%s': %s.",
+      type_name.c_str(), mq_name.c_str(), std::strerror(errno));
+  }
+  if (mq_close(fd) == -1) {
+    RCLCPP_WARN_ONCE(
+      rclcpp::get_logger("agnocast"), "Failed to close factory register MQ '%s': %s.",
+      mq_name.c_str(), std::strerror(errno));
+  }
+}
+
 // Called from `Publisher<T>` / `Subscription<T>` constructors. Idempotent.
 // No-op when instantiated for non-message types (e.g. service types pulled in
 // by `BasicService<ServiceT>`'s internal subscription / publisher).
@@ -118,6 +192,7 @@ void register_bridge_factory()
       },
     };
     BridgeFactoryRegistry::instance().register_entry(type_name, std::move(entry));
+    notify_bridge_manager_of_factory<MessageT>(type_name);
   }
 }
 

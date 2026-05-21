@@ -100,6 +100,11 @@ private:
 
   void on_mq_request(mqd_t fd);
   void on_daemon_mq_request(mqd_t fd);
+  // Drains the user → bridge_manager factory pre-registration MQ and
+  // populates this process's BridgeFactoryRegistry. See the comment on
+  // `MqMsgFactoryRegister` for the rationale and the planned kmod-based
+  // replacement.
+  void on_factory_register_request(mqd_t fd);
   void on_signal();
 
   void register_pubsub_request(const MqMsgBridge & req);
