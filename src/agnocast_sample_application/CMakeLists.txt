@@ -14,6 +14,7 @@ find_package(agnocastlib REQUIRED)
 find_package(agnocast_sample_interfaces REQUIRED)
 find_package(agnocast_components REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 
 add_executable(talker src/minimal_publisher.cpp)
 ament_target_dependencies(talker rclcpp agnocastlib agnocast_sample_interfaces)
@@ -99,6 +100,23 @@ target_include_directories(sim_time_timer PRIVATE
   ${agnocastlib_INCLUDE_DIRS}
 )
 
+add_executable(no_rclcpp_string_talker src/no_rclcpp_string_talker.cpp)
+ament_target_dependencies(no_rclcpp_string_talker agnocastlib std_msgs)
+target_include_directories(no_rclcpp_string_talker PRIVATE
+  ${agnocastlib_INCLUDE_DIRS}
+)
+
+add_library(agnocast_no_rclcpp_string_listener_component SHARED src/no_rclcpp_string_listener.cpp)
+ament_target_dependencies(agnocast_no_rclcpp_string_listener_component rclcpp rclcpp_components agnocastlib std_msgs)
+target_include_directories(agnocast_no_rclcpp_string_listener_component PRIVATE ${agnocastlib_INCLUDE_DIRS})
+
+agnocast_components_register_node(
+  agnocast_no_rclcpp_string_listener_component
+  PLUGIN "NoRclcppStringListener"
+  EXECUTABLE no_rclcpp_string_listener
+  EXECUTOR AgnocastOnlySingleThreadedExecutor
+)
+
 add_executable(no_rclcpp_pose_talker src/no_rclcpp_pose_talker.cpp)
 ament_target_dependencies(no_rclcpp_pose_talker agnocastlib geometry_msgs)
 target_include_directories(no_rclcpp_pose_talker PRIVATE
@@ -182,6 +200,17 @@ install(TARGETS no_rclcpp_client
 
 install(TARGETS sim_time_timer
   DESTINATION lib/${PROJECT_NAME})
+
+install(TARGETS no_rclcpp_string_talker
+  DESTINATION lib/${PROJECT_NAME})
+
+ament_export_targets(export_agnocast_no_rclcpp_string_listener_component)
+install(TARGETS agnocast_no_rclcpp_string_listener_component
+        EXPORT export_agnocast_no_rclcpp_string_listener_component
+        ARCHIVE DESTINATION lib
+        LIBRARY DESTINATION lib
+        RUNTIME DESTINATION bin
+)
 
 install(TARGETS no_rclcpp_pose_talker
   DESTINATION lib/${PROJECT_NAME})
