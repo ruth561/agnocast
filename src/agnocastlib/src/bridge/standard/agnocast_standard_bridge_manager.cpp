@@ -4,15 +4,19 @@
 #include "agnocast/bridge/agnocast_bridge_utils.hpp"
 #include "agnocast/internal/bridge_factory_registry.hpp"
 
+#include <dlfcn.h>
+#include <link.h>
 #include <sys/prctl.h>
 #include <unistd.h>
 
 #include <algorithm>
 #include <csignal>
 #include <cstring>
+#include <filesystem>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 
 namespace agnocast
 {
@@ -182,12 +186,13 @@ void StandardBridgeManager::on_daemon_mq_request(mqd_t fd)
 
 void StandardBridgeManager::on_factory_register_request(mqd_t fd)
 {
-  // Type aliases that match the template signatures of
-  // `agnocast::start_a2r_pubsub_node<T>` / `start_r2a_pubsub_node<T>`. The
-  // user process sends these as raw uintptr_t in the MqMsgFactoryRegister
-  // message; we recast and stash them in this process's
-  // BridgeFactoryRegistry, keyed by type_name, so daemon-originated
-  // MqMsgDaemonBridge requests can resolve them later.
+  // The user process sends (type_name, shared_lib_path, fn_offset_a2r,
+  // fn_offset_r2a). We dlopen the library here (it may have been loaded
+  // post-fork via composable_node and so is absent from our address
+  // space), read its load base via dlinfo, and reconstruct each factory
+  // function's address as `base + offset`. The address is then stored as
+  // a raw function pointer in our own BridgeFactoryRegistry so the
+  // daemon-originated MqMsgDaemonBridge handler can resolve and call it.
   using StartFn = std::shared_ptr<PubsubBridgeBase> (*)(
     rclcpp::Node::SharedPtr, const std::string &, const rclcpp::QoS &);
 
@@ -197,18 +202,54 @@ void StandardBridgeManager::on_factory_register_request(mqd_t fd)
       break;
     }
     const std::string type_name = static_cast<const char *>(req.type_name);
-    if (type_name.empty() || req.fn_a2r == 0 || req.fn_r2a == 0) {
+    const std::string lib_path = static_cast<const char *>(req.shared_lib_path);
+    if (type_name.empty() || lib_path.empty()) {
       RCLCPP_WARN(
-        logger_, "Skipping malformed factory register msg (type='%s', a2r=%p, r2a=%p).",
-        type_name.c_str(), reinterpret_cast<void *>(req.fn_a2r),
-        reinterpret_cast<void *>(req.fn_r2a));
+        logger_, "Skipping malformed factory register msg (type='%s', lib='%s').",
+        type_name.c_str(), lib_path.c_str());
       continue;
     }
-    auto fn_a2r = reinterpret_cast<StartFn>(req.fn_a2r);
-    auto fn_r2a = reinterpret_cast<StartFn>(req.fn_r2a);
+
+    // Decide whether the path refers to the main executable or to a
+    // separate shared library. For the main executable, `dlopen(nullptr)`
+    // is the canonical handle.
+    std::error_code ec;
+    auto self_path = std::filesystem::read_symlink("/proc/self/exe", ec);
+    bool is_self_exe = false;
+    if (!ec) {
+      if (std::filesystem::equivalent(std::filesystem::path(lib_path), self_path, ec)) {
+        is_self_exe = true;
+      }
+    }
+    void * handle = is_self_exe ? dlopen(nullptr, RTLD_NOW)
+                                : dlopen(lib_path.c_str(), RTLD_NOW | RTLD_LOCAL);
+    if (handle == nullptr) {
+      const char * err = dlerror();
+      RCLCPP_WARN(
+        logger_, "dlopen('%s') failed: %s; skipping factory for type '%s'.",
+        lib_path.c_str(), err != nullptr ? err : "unknown", type_name.c_str());
+      continue;
+    }
+    struct link_map * lmap = nullptr;
+    if (dlinfo(handle, RTLD_DI_LINKMAP, &lmap) != 0 || lmap == nullptr) {
+      RCLCPP_WARN(
+        logger_, "dlinfo failed for '%s'; skipping factory for type '%s'.",
+        lib_path.c_str(), type_name.c_str());
+      dlclose(handle);
+      continue;
+    }
+    const uintptr_t base = static_cast<uintptr_t>(lmap->l_addr);
+    auto fn_a2r = reinterpret_cast<StartFn>(base + req.fn_offset_a2r);
+    auto fn_r2a = reinterpret_cast<StartFn>(base + req.fn_offset_r2a);
     internal::BridgeFactoryEntry entry{fn_a2r, fn_r2a};
     internal::BridgeFactoryRegistry::instance().register_entry(type_name, std::move(entry));
-    RCLCPP_INFO(logger_, "Registered factory for type '%s'.", type_name.c_str());
+    // NB: we intentionally don't dlclose() — the handle must stay alive
+    // for the duration of any bridge node built from these factories. The
+    // library is small and only one handle per type, so the leak is bounded
+    // by the cardinality of distinct registered types.
+    RCLCPP_INFO(
+      logger_, "Registered factory for type '%s' from library '%s'.",
+      type_name.c_str(), lib_path.c_str());
   }
 }
 

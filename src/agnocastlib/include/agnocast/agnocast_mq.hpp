@@ -112,16 +112,20 @@ struct MqMsgDaemonBridge
 // Sent from the user process to its Standard-mode bridge_manager whenever a
 // new `Publisher<T>` or `Subscription<T>` is constructed. The bridge_manager
 // is a child process forked from this same user process by
-// `agnocast::init()`, so it shares the user's address-space layout (the
-// shared library hosting the factory templates is mapped at the same
-// addresses on both sides). Function pointers obtained in the user process
-// are therefore valid to call from the bridge_manager process.
-//
-// Without this pre-registration, the bridge_manager's
-// `BridgeFactoryRegistry` is empty (the registration `register_bridge_factory<T>()`
-// happens *after* the fork) and a daemon-originated `MqMsgDaemonBridge`
-// arriving for type `T` is silently skipped with the WARN
+// `agnocast::init()` — but the fork happens *before* user code creates
+// the Publisher / Subscription, so the bridge_manager's
+// `BridgeFactoryRegistry` is empty by default and a daemon-originated
+// `MqMsgDaemonBridge` for type `T` is silently skipped with the WARN
 // `no factory registered in this process`.
+//
+// We can't just send raw function pointers because composable_node
+// libraries (e.g. listener_component.so) are dlopen()'d in the user
+// process *after* fork: the resulting template instantiations live in
+// pages that exist only in the parent's address space, and the
+// bridge_manager would segfault on call. Instead we send (shared_lib_path,
+// fn_offset_*) tuples — the bridge_manager dlopens the same library and
+// reconstructs the address as `base + offset`. This mirrors the existing
+// intra-NS MqMsgBridge / BridgeFactoryInfo pattern.
 //
 // TODO: Replace with a `need-minor-update` kmod-based design when the
 // agnocastlib ↔ kmod ABI is bumped — the kmod can expose the message type
@@ -131,12 +135,16 @@ struct MqMsgDaemonBridge
 struct MqMsgFactoryRegister
 {
   char type_name[MESSAGE_TYPE_BUFFER_SIZE];
-  // Pointers to `start_a2r_pubsub_node<T>` / `start_r2a_pubsub_node<T>`
-  // template instantiations. Stored as uintptr_t for portability; recast
-  // to the appropriate function pointer type in the bridge_manager
-  // handler.
-  uintptr_t fn_a2r;
-  uintptr_t fn_r2a;
+  // Path to the shared library (or main executable) hosting the template
+  // instantiations of `start_a2r_pubsub_node<T>` / `start_r2a_pubsub_node<T>`.
+  // Obtained on the user side via `dladdr`.
+  char shared_lib_path[SHARED_LIB_PATH_BUFFER_SIZE];
+  // Offsets from the library's load base address. The bridge_manager
+  // dlopen()s the library, reads its base via `dlinfo(RTLD_DI_LINKMAP)`,
+  // and computes `base + offset` to get the function address valid in
+  // *its own* address space.
+  uintptr_t fn_offset_a2r;
+  uintptr_t fn_offset_r2a;
 };
 
 constexpr int64_t BRIDGE_MQ_MAX_MESSAGES = 2;

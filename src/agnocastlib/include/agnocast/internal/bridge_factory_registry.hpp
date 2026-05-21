@@ -39,6 +39,7 @@
 #include <rclcpp/qos.hpp>
 #include <rosidl_runtime_cpp/traits.hpp>
 
+#include <dlfcn.h>
 #include <fcntl.h>
 #include <mqueue.h>
 
@@ -111,15 +112,18 @@ private:
 };
 
 // Mirrors a successful local `register_bridge_factory<T>()` to the
-// Standard-mode bridge_manager via a tiny POSIX MQ write. The bridge_manager
-// is a fork() child of this user process, so the addresses of
-// `start_a2r_pubsub_node<T>` / `start_r2a_pubsub_node<T>` are valid in its
-// address space (same shared library at same offsets). The bridge_manager
-// stores those raw function pointers in its own BridgeFactoryRegistry and
-// uses them to honour daemon-originated `MqMsgDaemonBridge` requests.
-// Best-effort: any MQ failure is logged once and the user process continues
-// (the daemon path will silently no-op for this type until a working
-// bridge_manager picks the registration up).
+// Standard-mode bridge_manager via a small POSIX MQ write.
+//
+// We can't send raw function pointers because the function may live in a
+// shared library dlopen()'d *after* the bridge_manager was forked
+// (composable_node case). Instead we resolve the function via `dladdr`
+// to (shared_lib_path, offset-from-base) and let the bridge_manager
+// dlopen the same library and reconstruct the address. This mirrors the
+// existing intra-NS MqMsgBridge / BridgeFactoryInfo flow.
+//
+// Best-effort: any failure (dladdr / mq_open / mq_send) is logged once and
+// the user process continues. The daemon path will silently no-op for
+// this type until a working pre-registration lands.
 //
 // TODO: Replace with a `need-minor-update` kmod path that exposes the
 // message type alongside the existing topic / node info so the
@@ -132,6 +136,44 @@ inline void notify_bridge_manager_of_factory(const std::string & type_name)
     // Either bridge_manager has not been spawned yet (early static init?)
     // or this process is running in Performance mode where the
     // bridge_manager is a different process model.
+    return;
+  }
+
+  // Resolve the function templates to (lib_path, offset-from-base) so the
+  // bridge_manager can reconstruct the address in its own process. dladdr
+  // on a template instantiation returns the .so (or main executable) that
+  // owns the instantiation.
+  auto fn_a2r_addr = reinterpret_cast<uintptr_t>(&start_a2r_pubsub_node<MessageT>);
+  auto fn_r2a_addr = reinterpret_cast<uintptr_t>(&start_r2a_pubsub_node<MessageT>);
+  Dl_info info_a2r{};
+  Dl_info info_r2a{};
+  if (
+    dladdr(reinterpret_cast<void *>(fn_a2r_addr), &info_a2r) == 0 ||
+    info_a2r.dli_fname == nullptr || info_a2r.dli_fbase == nullptr) {
+    RCLCPP_WARN_ONCE(
+      rclcpp::get_logger("agnocast"),
+      "dladdr failed for start_a2r_pubsub_node<%s>; skipping factory pre-register.",
+      type_name.c_str());
+    return;
+  }
+  if (
+    dladdr(reinterpret_cast<void *>(fn_r2a_addr), &info_r2a) == 0 ||
+    info_r2a.dli_fname == nullptr || info_r2a.dli_fbase == nullptr) {
+    RCLCPP_WARN_ONCE(
+      rclcpp::get_logger("agnocast"),
+      "dladdr failed for start_r2a_pubsub_node<%s>; skipping factory pre-register.",
+      type_name.c_str());
+    return;
+  }
+  // The two factories should come from the same translation unit / library
+  // (they're both template instantiations in the same scope). If they
+  // disagree something pathological is going on.
+  if (std::strcmp(info_a2r.dli_fname, info_r2a.dli_fname) != 0) {
+    RCLCPP_WARN_ONCE(
+      rclcpp::get_logger("agnocast"),
+      "start_a2r and start_r2a for type '%s' resolved to different libraries (%s vs %s);"
+      " skipping factory pre-register.",
+      type_name.c_str(), info_a2r.dli_fname, info_r2a.dli_fname);
     return;
   }
 
@@ -157,8 +199,9 @@ inline void notify_bridge_manager_of_factory(const std::string & type_name)
 
   MqMsgFactoryRegister msg{};
   std::strncpy(msg.type_name, type_name.c_str(), sizeof(msg.type_name) - 1);
-  msg.fn_a2r = reinterpret_cast<uintptr_t>(&start_a2r_pubsub_node<MessageT>);
-  msg.fn_r2a = reinterpret_cast<uintptr_t>(&start_r2a_pubsub_node<MessageT>);
+  std::strncpy(msg.shared_lib_path, info_a2r.dli_fname, sizeof(msg.shared_lib_path) - 1);
+  msg.fn_offset_a2r = fn_a2r_addr - reinterpret_cast<uintptr_t>(info_a2r.dli_fbase);
+  msg.fn_offset_r2a = fn_r2a_addr - reinterpret_cast<uintptr_t>(info_r2a.dli_fbase);
 
   if (mq_send(fd, reinterpret_cast<const char *>(&msg), sizeof(msg), 0) == -1) {
     RCLCPP_WARN_ONCE(
