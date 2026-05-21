@@ -153,7 +153,8 @@ class BasicSubscription : public SubscriptionBase
     // BasicService<ServiceT> have no rosidl message name.
     if constexpr (rosidl_generator_traits::is_message<MessageT>::value) {
       internal::TypeRegistryWriter::instance().register_type(
-        topic_name_, rosidl_generator_traits::name<MessageT>(), "sub", node_name);
+        topic_name_, rosidl_generator_traits::name<MessageT>(), "sub", node_name,
+        standard_bridge_manager_pid);
     }
 
     mqd_t mq = open_mq_for_subscription(topic_name_, id_, mq_subscription_);
@@ -274,7 +275,8 @@ private:
     // BasicService<ServiceT> have no rosidl message name.
     if constexpr (rosidl_generator_traits::is_message<MessageT>::value) {
       internal::TypeRegistryWriter::instance().register_type(
-        topic_name_, rosidl_generator_traits::name<MessageT>(), "sub", node_name);
+        topic_name_, rosidl_generator_traits::name<MessageT>(), "sub", node_name,
+        standard_bridge_manager_pid);
     }
 
     return actual_qos;

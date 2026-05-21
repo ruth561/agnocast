@@ -148,7 +148,7 @@ void TypeRegistryWriter::ensure_open_locked()
 
 void TypeRegistryWriter::register_type(
   const std::string & topic_name, const std::string & type_name, const std::string & role,
-  const std::string & node_name)
+  const std::string & node_name, pid_t bridge_manager_pid)
 {
   std::lock_guard<std::mutex> lock(mutex_);
   ensure_open_locked();
@@ -156,12 +156,15 @@ void TypeRegistryWriter::register_type(
     return;
   }
 
+  std::string bm_pid_str = std::to_string(bridge_manager_pid);
   std::string line;
-  line.reserve(topic_name.size() + type_name.size() + role.size() + node_name.size() + 4);
+  line.reserve(
+    topic_name.size() + type_name.size() + role.size() + node_name.size() + bm_pid_str.size() + 5);
   line.append(topic_name).push_back('\t');
   line.append(type_name).push_back('\t');
   line.append(role).push_back('\t');
-  line.append(node_name).push_back('\n');
+  line.append(node_name).push_back('\t');
+  line.append(bm_pid_str).push_back('\n');
 
   // `write` is atomic up to PIPE_BUF for regular files on Linux; lines are
   // well under that. We retry on EINTR but ignore short writes (a partial

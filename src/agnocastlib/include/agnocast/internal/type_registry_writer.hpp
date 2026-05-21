@@ -39,14 +39,19 @@ class TypeRegistryWriter
 public:
   static TypeRegistryWriter & instance();
 
-  // Append one `<topic>\t<type>\t<role>\t<node_name>\n` line to the
-  // per-pid file. `role` must be either `"pub"` or `"sub"`. Idempotent
-  // from the caller's view: the daemon dedupes identical triples on
-  // ingest. Errors are logged once and then silently swallowed so a
-  // missing `/run/agnocast` directory does not break user processes.
+  // Append one `<topic>\t<type>\t<role>\t<node_name>\t<bridge_manager_pid>\n`
+  // line to the per-pid file. `role` must be either `"pub"` or `"sub"`.
+  // `bridge_manager_pid` is the pid the daemon should target when sending
+  // a `MqMsgDaemonBridge` for this endpoint; in Standard mode that is the
+  // bridge_manager forked from this user process (= `agnocast::standard_bridge_manager_pid`),
+  // and in Performance mode it is 0 (the daemon then falls back to the
+  // per-NS Performance MQ). Idempotent from the caller's view: the daemon
+  // dedupes identical triples on ingest. Errors are logged once and then
+  // silently swallowed so a missing `/dev/shm/agnocast_type_registry`
+  // directory does not break user processes.
   void register_type(
     const std::string & topic_name, const std::string & type_name, const std::string & role,
-    const std::string & node_name);
+    const std::string & node_name, pid_t bridge_manager_pid);
 
   // Test seam: override the tmpfs base directory (default `/run/agnocast`).
   // Must be called before the first `register_type`.

@@ -132,7 +132,8 @@ class BasicPublisher
     // types pulled in by BasicService<ServiceT> have no rosidl message name.
     if constexpr (rosidl_generator_traits::is_message<MessageT>::value) {
       internal::TypeRegistryWriter::instance().register_type(
-        topic_name_, rosidl_generator_traits::name<MessageT>(), "pub", node_name);
+        topic_name_, rosidl_generator_traits::name<MessageT>(), "pub", node_name,
+        standard_bridge_manager_pid);
     }
 
     return actual_qos;

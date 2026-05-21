@@ -4,7 +4,7 @@
 // Unit tests for the process-local `TypeRegistryWriter`. We verify that:
 //
 //  * the first `register_type()` call creates `<base>/<ns_inode>/<pid>.txt`
-//    with the expected `<topic>\t<type>\t<role>\t<node>\n` content,
+//    with the expected `<topic>\t<type>\t<role>\t<node>\t<bm_pid>\n` content,
 //  * subsequent calls append (the file grows, not truncates),
 //  * concurrent registrations do not interleave within a single line.
 //
@@ -70,7 +70,8 @@ protected:
 TEST_F(TypeRegistryWriterTest, RegisterTypeWritesExpectedLine)
 {
   auto & writer = agnocast::internal::TypeRegistryWriter::instance();
-  writer.register_type("/chatter", "std_msgs/msg/Int32", "pub", "/talker_node");
+  writer.register_type(
+    "/chatter", "std_msgs/msg/Int32", "pub", "/talker_node", /*bridge_manager_pid=*/4242);
 
   const std::string path = writer.current_path_for_test();
   ASSERT_FALSE(path.empty());
@@ -82,19 +83,22 @@ TEST_F(TypeRegistryWriterTest, RegisterTypeWritesExpectedLine)
   EXPECT_EQ(path.substr(0, base_dir_.size()), base_dir_);
 
   const std::string body = read_file(path);
-  EXPECT_NE(body.find("/chatter\tstd_msgs/msg/Int32\tpub\t/talker_node\n"), std::string::npos);
+  EXPECT_NE(
+    body.find("/chatter\tstd_msgs/msg/Int32\tpub\t/talker_node\t4242\n"), std::string::npos);
 }
 
 TEST_F(TypeRegistryWriterTest, RegisterTypeAppendsAdditionalLines)
 {
   auto & writer = agnocast::internal::TypeRegistryWriter::instance();
-  writer.register_type("/topic_a", "std_msgs/msg/Int32", "pub", "/node_a");
-  writer.register_type("/topic_b", "std_msgs/msg/String", "sub", "/node_b");
+  writer.register_type(
+    "/topic_a", "std_msgs/msg/Int32", "pub", "/node_a", /*bridge_manager_pid=*/4242);
+  writer.register_type(
+    "/topic_b", "std_msgs/msg/String", "sub", "/node_b", /*bridge_manager_pid=*/4242);
 
   const std::string body = read_file(writer.current_path_for_test());
   // Both lines should be present (order matches call order).
-  const auto pos_a = body.find("/topic_a\tstd_msgs/msg/Int32\tpub\t/node_a\n");
-  const auto pos_b = body.find("/topic_b\tstd_msgs/msg/String\tsub\t/node_b\n");
+  const auto pos_a = body.find("/topic_a\tstd_msgs/msg/Int32\tpub\t/node_a\t4242\n");
+  const auto pos_b = body.find("/topic_b\tstd_msgs/msg/String\tsub\t/node_b\t4242\n");
   ASSERT_NE(pos_a, std::string::npos);
   ASSERT_NE(pos_b, std::string::npos);
   EXPECT_LT(pos_a, pos_b);
@@ -112,7 +116,7 @@ TEST_F(TypeRegistryWriterTest, ConcurrentRegisterTypeDoesNotInterleaveLines)
       for (int i = 0; i < kPerThread; ++i) {
         writer.register_type(
           "/topic_" + std::to_string(t), "std_msgs/msg/Int32", "pub",
-          "/node_" + std::to_string(t) + "_" + std::to_string(i));
+          "/node_" + std::to_string(t) + "_" + std::to_string(i), /*bridge_manager_pid=*/4242);
       }
     });
   }
@@ -120,7 +124,8 @@ TEST_F(TypeRegistryWriterTest, ConcurrentRegisterTypeDoesNotInterleaveLines)
     th.join();
   }
 
-  // Every line should have exactly 3 tabs (4 fields) and end in `\n`.
+  // Every line should have exactly 4 tabs (5 fields: topic, type, role,
+  // node, bridge_manager_pid) and end in `\n`.
   const std::string body = read_file(writer.current_path_for_test());
   std::stringstream ss(body);
   std::string line;
@@ -130,7 +135,7 @@ TEST_F(TypeRegistryWriterTest, ConcurrentRegisterTypeDoesNotInterleaveLines)
     for (char c : line) {
       if (c == '\t') ++tabs;
     }
-    EXPECT_EQ(tabs, 3) << "garbled line: " << line;
+    EXPECT_EQ(tabs, 4) << "garbled line: " << line;
     ++count;
   }
   // Every register_type call must produce exactly one line.
