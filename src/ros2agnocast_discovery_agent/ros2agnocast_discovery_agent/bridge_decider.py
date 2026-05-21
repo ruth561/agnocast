@@ -99,7 +99,7 @@ def serialize_request(req: BridgeRequest) -> bytes:
     return packed
 
 
-def decide_bridges(local_state, remote_states) -> list:
+def decide_bridges(local_state, remote_states, registry=None) -> list:
     """Compute the bridges that should be requested in the local namespace.
 
     Args:
@@ -107,12 +107,25 @@ def decide_bridges(local_state, remote_states) -> list:
             the daemon just built from procfs / ioctl).
         remote_states: mapping ``(host_uuid, ipc_ns_inode) -> AgnocastDaemonState``
             collected from the gossip subscription.
+        registry: optional ``TypeRegistryReader`` used to translate a local
+            (topic, role, node_name) tuple into the bridge_manager pid the
+            request should target. When omitted (or no entry matches), the
+            request falls back to ``target_pid=0`` and is routed to the
+            per-NS Performance MQ.
 
     Returns:
         list of ``BridgeRequest`` to dispatch on this tick. Duplicates are
         collapsed (one request per (topic_name, direction)).
     """
     requests = {}
+
+    def _bm_pid(topic_name: str, role: str, node_name: str) -> int:
+        if registry is None:
+            return 0
+        entry = registry.lookup(topic_name, role, node_name)
+        if entry is None:
+            return 0
+        return getattr(entry, 'bridge_manager_pid', 0)
 
     local_by_topic = {t.topic_name: t for t in local_state.topics}
 
@@ -135,8 +148,9 @@ def decide_bridges(local_state, remote_states) -> list:
 
             # Local Agnocast publisher + remote Agnocast subscriber -> A2R
             # bridge here so the local publisher's data reaches ROS 2 (DDS).
-            # Target pid = local publisher pid so Standard-mode dispatch
-            # hits exactly the user process holding the factory.
+            # Target pid = local publisher's bridge_manager pid so the
+            # MqMsgDaemonBridge lands on the MQ the bridge_manager opened
+            # under its own getpid().
             if local_pubs and remote_subs:
                 qos_source = local_pubs[0]
                 key = (local_topic.topic_name, DIRECTION_AGNOCAST_TO_ROS2)
@@ -149,7 +163,8 @@ def decide_bridges(local_state, remote_states) -> list:
                         qos_depth=qos_source.qos_depth,
                         qos_is_transient_local=qos_source.qos_is_transient_local,
                         qos_is_reliable=qos_source.qos_is_reliable,
-                        target_pid=qos_source.pid,
+                        target_pid=_bm_pid(
+                            local_topic.topic_name, 'pub', qos_source.node_name),
                     ),
                 )
 
@@ -167,7 +182,8 @@ def decide_bridges(local_state, remote_states) -> list:
                         qos_depth=qos_source.qos_depth,
                         qos_is_transient_local=qos_source.qos_is_transient_local,
                         qos_is_reliable=qos_source.qos_is_reliable,
-                        target_pid=qos_source.pid,
+                        target_pid=_bm_pid(
+                            local_topic.topic_name, 'sub', qos_source.node_name),
                     ),
                 )
 

@@ -220,7 +220,23 @@ def test_serialize_packs_qos_flags():
     assert reliable == 1
 
 
-def test_decide_carries_local_publisher_pid_as_a2r_target():
+class _FakeRegistry:
+    """Minimal TypeRegistryReader-shaped fake for decide_bridges tests."""
+
+    def __init__(self, entries):
+        # entries: {(topic, role, node_name): obj with bridge_manager_pid}
+        self._entries = entries
+
+    def lookup(self, topic_name, role, node_name):
+        return self._entries.get((topic_name, role, node_name))
+
+
+class _Entry:
+    def __init__(self, bridge_manager_pid):
+        self.bridge_manager_pid = bridge_manager_pid
+
+
+def test_decide_carries_local_publisher_bm_pid_as_a2r_target():
     local = _state(
         topics=[_topic('/x', pubs=[_endpoint('/pub', pid=4242)])],
     )
@@ -228,22 +244,37 @@ def test_decide_carries_local_publisher_pid_as_a2r_target():
         host_uuid='OTHER', ipc_ns=222,
         topics=[_topic('/x', subs=[_endpoint('/sub')])],
     )
-    reqs = decide_bridges(local, {('OTHER', 222): remote})
+    # bridge_manager pid (5555) differs from publisher's user pid (4242).
+    registry = _FakeRegistry({('/x', 'pub', '/pub'): _Entry(bridge_manager_pid=5555)})
+    reqs = decide_bridges(local, {('OTHER', 222): remote}, registry)
     assert len(reqs) == 1
     assert reqs[0].direction == DIRECTION_AGNOCAST_TO_ROS2
-    assert reqs[0].target_pid == 4242
+    assert reqs[0].target_pid == 5555
 
 
-def test_decide_carries_local_subscriber_pid_as_r2a_target():
+def test_decide_carries_local_subscriber_bm_pid_as_r2a_target():
     local = _state(topics=[_topic('/x', subs=[_endpoint('/sub', pid=7777)])])
     remote = _state(
         host_uuid='OTHER', ipc_ns=222,
         topics=[_topic('/x', pubs=[_endpoint('/pub')])],
     )
-    reqs = decide_bridges(local, {('OTHER', 222): remote})
+    registry = _FakeRegistry({('/x', 'sub', '/sub'): _Entry(bridge_manager_pid=8888)})
+    reqs = decide_bridges(local, {('OTHER', 222): remote}, registry)
     assert len(reqs) == 1
     assert reqs[0].direction == DIRECTION_ROS2_TO_AGNOCAST
-    assert reqs[0].target_pid == 7777
+    assert reqs[0].target_pid == 8888
+
+
+def test_decide_falls_back_to_zero_when_registry_absent():
+    """Without a registry the dispatch falls back to the Performance per-NS MQ."""
+    local = _state(topics=[_topic('/x', pubs=[_endpoint('/pub', pid=1)])])
+    remote = _state(
+        host_uuid='OTHER', ipc_ns=222,
+        topics=[_topic('/x', subs=[_endpoint('/sub')])],
+    )
+    reqs = decide_bridges(local, {('OTHER', 222): remote})  # no registry
+    assert len(reqs) == 1
+    assert reqs[0].target_pid == 0
 
 
 def test_dispatch_sends_to_targeted_standard_mq_when_pid_known(monkeypatch):

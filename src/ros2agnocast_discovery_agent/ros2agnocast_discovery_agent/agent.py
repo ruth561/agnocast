@@ -278,7 +278,8 @@ class DiscoveryAgent(Node):
         """Compare local vs remote gossip state and send bridge requests."""
         if not self._remote_states:
             return
-        requests = bridge_decider.decide_bridges(local_state, self._remote_states)
+        requests = bridge_decider.decide_bridges(
+            local_state, self._remote_states, self._registry)
         if requests:
             bridge_decider.dispatch_requests(requests, logger=self.get_logger())
 

@@ -42,11 +42,23 @@ BASE_DIR = _default_base_dir()
 
 @dataclass(frozen=True)
 class RegistryEntry:
+    # The user process pid that owns the Publisher<T>/Subscription<T>. Comes
+    # from the tmpfs filename (`<pid>.txt`). Used for gossip's
+    # ``AgnocastEndpoint.pid`` so the CLI can identify which process owns
+    # the endpoint.
     pid: int
     type_name: str
+    # The pid of the bridge_manager that listens on
+    # ``/agnocast_daemon_bridge@<bridge_manager_pid>`` for this endpoint.
+    # In Standard mode this is the bridge_manager forked from the user
+    # process; in Performance mode it is 0, and the daemon falls back to
+    # the per-NS Performance MQ. Stamped by ``TypeRegistryWriter`` from
+    # ``agnocast::standard_bridge_manager_pid`` and carried as the 5th tab-
+    # separated field in the tmpfs line.
+    bridge_manager_pid: int = 0
 
 
-# Match key (topic_name, role, node_name) -> (pid, type_name).
+# Match key (topic_name, role, node_name) -> (pid, type_name, bridge_manager_pid).
 # role is "pub" or "sub".
 RegistryTable = Dict[Tuple[str, str, str], RegistryEntry]
 
@@ -125,11 +137,22 @@ class TypeRegistryReader:
                     self._warned_malformed_files.add(path)
                 continue
             topic, type_name, role, node_name = fields[0], fields[1], fields[2], fields[3]
-            # Extra fields beyond the required four are ignored on purpose
-            # to keep this reader forward-compatible with future writers.
+            # The 5th field (bridge_manager_pid) is required for daemon
+            # bridge dispatch but optional for backward compatibility: a
+            # missing or non-integer value falls back to 0, which routes
+            # the request to the Performance per-NS MQ instead of the
+            # Standard per-process MQ. Fields beyond the 5th are reserved
+            # for future writers and ignored.
+            bm_pid = 0
+            if len(fields) >= 5:
+                try:
+                    bm_pid = int(fields[4])
+                except ValueError:
+                    bm_pid = 0
             if role not in ('pub', 'sub'):
                 continue
-            table[(topic, role, node_name)] = RegistryEntry(pid=pid, type_name=type_name)
+            table[(topic, role, node_name)] = RegistryEntry(
+                pid=pid, type_name=type_name, bridge_manager_pid=bm_pid)
 
     def cleanup_dead_pids(self) -> None:
         """Remove tmpfs files whose owning PID is no longer alive.
