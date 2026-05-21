@@ -1,9 +1,9 @@
 """Unit tests for the bridge decider.
 
 These tests do not require the kmod, DDS, or any POSIX MQ: the decider's
-pure-logic part (`decide_bridges`) is exercised directly, and the wire
+pure-logic part (``decide_bridges``) is exercised directly, and the wire
 format is checked against a hand-built byte layout that mirrors
-`sizeof(MqMsgDaemonBridge) == 524` in `agnocast_mq.hpp`.
+``sizeof(MqMsgDaemonBridge) == 524`` in ``agnocast_mq.hpp``.
 """
 
 from ros2agnocast_discovery_agent.bridge_decider import (
@@ -247,7 +247,7 @@ def test_decide_carries_local_subscriber_pid_as_r2a_target():
 
 
 def test_dispatch_sends_to_targeted_standard_mq_when_pid_known(monkeypatch):
-    """Standard-mode dispatch must target `/agnocast_daemon_bridge@<pid>` only."""
+    """Standard-mode dispatch must target ``/agnocast_daemon_bridge@<pid>`` only."""
     from ros2agnocast_discovery_agent import bridge_decider as bd
 
     sent = []

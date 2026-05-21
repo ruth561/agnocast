@@ -136,7 +136,7 @@ def test_read_local_topics_combines_pub_and_sub():
 
 
 def test_read_local_topics_resolves_type_from_registry():
-    """A registry entry for any endpoint on the topic populates `type_name`."""
+    """A registry entry for any endpoint on the topic populates ``type_name``."""
     from ros2agnocast_discovery_agent.type_registry import RegistryEntry
 
     pub_info = _make_info('/talker_node')

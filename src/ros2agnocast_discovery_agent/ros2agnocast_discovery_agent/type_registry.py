@@ -1,6 +1,6 @@
 """Read agnocastlib's per-process tmpfs type announcements.
 
-Each Agnocast process appends `<topic>\\t<type>\\t<role>\\t<node>\\n` lines to
+Each Agnocast process appends ``<topic>\\t<type>\\t<role>\\t<node>\\n`` lines to
 ``/dev/shm/agnocast_type_registry/<ipc_ns_inode>/<pid>.txt`` on each
 ``Publisher<T>`` / ``Subscription<T>`` construction (see
 ``agnocastlib::internal::TypeRegistryWriter``). The daemon walks the per-NS
@@ -28,7 +28,7 @@ from typing import Dict, Optional, Tuple
 def _default_base_dir() -> str:
     """Return the tmpfs root the writer agreed on.
 
-    Mirrors `agnocastlib::internal::TypeRegistryWriter`: read
+    Mirrors ``agnocastlib::internal::TypeRegistryWriter``: read
     ``AGNOCAST_TMPFS_DIR`` if set (for hardened containers where
     ``/dev/shm`` is unavailable or too small) and append the
     ``agnocast_type_registry`` suffix.
@@ -108,8 +108,8 @@ class TypeRegistryReader:
             return
 
         text = data.decode('utf-8', errors='replace')
-        # Only fully terminated lines are accepted. `splitlines(keepends=True)`
-        # preserves the trailing `\n` so we can distinguish complete lines
+        # Only fully terminated lines are accepted. ``splitlines(keepends=True)``
+        # preserves the trailing ``\n`` so we can distinguish complete lines
         # from a torn tail.
         for raw_line in text.splitlines(keepends=True):
             if not raw_line.endswith('\n'):

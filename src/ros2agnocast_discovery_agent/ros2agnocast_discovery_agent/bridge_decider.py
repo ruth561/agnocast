@@ -1,18 +1,18 @@
 """Bridge decider for the per-IPC-namespace discovery agent.
 
 Compares the local AgnocastDaemonState with remote (cross-NS / cross-ECU)
-snapshots gathered through gossip and emits `MqMsgDaemonBridge` requests
+snapshots gathered through gossip and emits ``MqMsgDaemonBridge`` requests
 to the in-namespace bridge_manager MQs:
 
-  * Standard mode:  `/agnocast_daemon_bridge@<pid>` (broadcast to every
+  * Standard mode:  ``/agnocast_daemon_bridge@<pid>`` (broadcast to every
     running bridge_manager so the one whose process registered the type
     factory picks it up).
-  * Performance mode: `/agnocast_daemon_bridge_perf[_d<ROS_DOMAIN_ID>]`
+  * Performance mode: ``/agnocast_daemon_bridge_perf[_d<ROS_DOMAIN_ID>]``
     (one MQ per IPC namespace).
 
-The struct layout for `MqMsgDaemonBridge` is hard-coded here so the
+The struct layout for ``MqMsgDaemonBridge`` is hard-coded here so the
 daemon stays decoupled from libagnocast's C++ headers — the layout is
-intentionally simple and additive (see `agnocast_mq.hpp`).
+intentionally simple and additive (see ``agnocast_mq.hpp``).
 """
 
 import ctypes
@@ -22,7 +22,7 @@ import struct
 from dataclasses import dataclass
 from typing import Iterable, Optional
 
-# Mirrors the C++ constants in `agnocast_mq.hpp`. Keep in sync if those
+# Mirrors the C++ constants in ``agnocast_mq.hpp``. Keep in sync if those
 # struct layouts change (a CI lint or test should guard this).
 TOPIC_NAME_BUFFER_SIZE = 256
 MESSAGE_TYPE_BUFFER_SIZE = 256
@@ -34,8 +34,8 @@ BRIDGE_MQ_PERMS = 0o600
 # struct.pack format with explicit standard sizes / no padding handled
 # below by emitting native sizes and matching the C++ struct's natural
 # layout. The struct is plain POD so native packing matches.
-# Native order, fixed sizes. Trailing `2x` is the alignment padding the C++
-# compiler adds so the total matches `sizeof(MqMsgDaemonBridge) == 524`.
+# Native order, fixed sizes. Trailing ``2x`` is the alignment padding the C++
+# compiler adds so the total matches ``sizeof(MqMsgDaemonBridge) == 524``.
 _MSG_PACK_FORMAT = '=256s256sIIBB2x'
 
 DIRECTION_ROS2_TO_AGNOCAST = 0
@@ -79,10 +79,10 @@ class BridgeRequest:
 
 
 def serialize_request(req: BridgeRequest) -> bytes:
-    """Pack a `BridgeRequest` into the wire format expected by bridge_manager.
+    """Pack a ``BridgeRequest`` into the wire format expected by bridge_manager.
 
     The trailing bytes after the 4 packed fields are padded with NULs to
-    match `sizeof(MqMsgDaemonBridge)`.
+    match ``sizeof(MqMsgDaemonBridge)``.
     """
     # Use truncation to stay within fixed-size char arrays.
     topic = req.topic_name.encode('utf-8')[: TOPIC_NAME_BUFFER_SIZE - 1]
@@ -109,7 +109,7 @@ def decide_bridges(local_state, remote_states) -> list:
             collected from the gossip subscription.
 
     Returns:
-        list of `BridgeRequest` to dispatch on this tick. Duplicates are
+        list of ``BridgeRequest`` to dispatch on this tick. Duplicates are
         collapsed (one request per (topic_name, direction)).
     """
     requests = {}
@@ -188,7 +188,7 @@ def _performance_mq_name() -> str:
 
 
 def send_request(mq_name: str, payload: bytes) -> Optional[str]:
-    """Send `payload` to the POSIX MQ at `mq_name`.
+    """Send ``payload`` to the POSIX MQ at ``mq_name``.
 
     Returns an error string on failure, None on success. ``O_NONBLOCK`` is
     used so a full queue does not block the daemon — the next tick will
@@ -218,14 +218,14 @@ def dispatch_requests(requests: Iterable[BridgeRequest], logger=None) -> None:
     """Send every request to the Performance MQ and to the target Standard MQ.
 
     Standard-mode targeting: each request carries the pid of the local
-    user process whose `Publisher<T>` / `Subscription<T>` registered the
+    user process whose ``Publisher<T>`` / ``Subscription<T>`` registered the
     factory in this process (via the tmpfs type registry). The daemon
-    sends only to that pid's `/agnocast_daemon_bridge@<pid>` MQ —
+    sends only to that pid's ``/agnocast_daemon_bridge@<pid>`` MQ —
     avoiding the broadcast hack that the previous design needed when
     pid was unknown.
 
-    Performance mode uses a single per-NS MQ (`pid` is irrelevant there).
-    A request with `target_pid == 0` (no matching registry entry) is
+    Performance mode uses a single per-NS MQ (``pid`` is irrelevant there).
+    A request with ``target_pid == 0`` (no matching registry entry) is
     delivered only to the Performance MQ; Standard-mode managers don't
     receive it.
     """

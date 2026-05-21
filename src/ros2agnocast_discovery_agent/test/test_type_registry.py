@@ -1,7 +1,7 @@
 """Unit tests for the discovery agent's TypeRegistryReader.
 
-The reader scans a per-namespace tmpfs directory of `<pid>.txt` files
-written by `agnocastlib::internal::TypeRegistryWriter`. These tests use
+The reader scans a per-namespace tmpfs directory of ``<pid>.txt`` files
+written by ``agnocastlib::internal::TypeRegistryWriter``. These tests use
 a temporary directory as the base — no kmod, no rclpy.
 """
 
@@ -61,7 +61,7 @@ def test_rebuild_handles_missing_ns_dir():
 
 
 def test_rebuild_skips_unterminated_tail():
-    """A writer dying mid-write leaves a tail without `\\n`. Skip it."""
+    """A writer dying mid-write leaves a tail without ``\\n``. Skip it."""
     with tempfile.TemporaryDirectory() as tmpdir:
         reader = _make_reader(tmpdir)
         _write(
@@ -143,7 +143,7 @@ def test_rebuild_skips_non_numeric_filenames():
 
 
 def test_default_base_dir_honors_agnocast_tmpfs_dir(monkeypatch):
-    """`AGNOCAST_TMPFS_DIR` overrides the `/dev/shm` default for the registry root."""
+    """``AGNOCAST_TMPFS_DIR`` overrides the ``/dev/shm`` default for the registry root."""
     from ros2agnocast_discovery_agent import type_registry
 
     monkeypatch.setenv('AGNOCAST_TMPFS_DIR', '/run/custom')

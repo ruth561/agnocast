@@ -2,21 +2,21 @@
 
 The agent is responsible for (a) publishing the local Agnocast state on
 ``/_agnocast_discovery`` for cross-namespace observability and (b)
-dispatching `MqMsgDaemonBridge` requests so that cross-IPC-NS bridges
+dispatching ``MqMsgDaemonBridge`` requests so that cross-IPC-NS bridges
 are auto-generated. If the daemon is not running (or running in a
 different IPC namespace), both features silently stop working — this
 verb gives the operator a single place to confirm liveness.
 
 Checks performed (each prints OK / NG with detail):
 
-  * **process** — any `ros2agnocast_discovery_agent` process is running
-    in **this** IPC namespace (matched by `/proc/<pid>/ns/ipc`).
-  * **gossip** — `/_agnocast_discovery` has at least one DDS publisher
-    on the current `ROS_DOMAIN_ID` and a snapshot is received within
+  * **process** — any ``ros2agnocast_discovery_agent`` process is running
+    in **this** IPC namespace (matched by ``/proc/<pid>/ns/ipc``).
+  * **gossip** — ``/_agnocast_discovery`` has at least one DDS publisher
+    on the current ``ROS_DOMAIN_ID`` and a snapshot is received within
     the timeout.
   * **type_registry** — the tmpfs directory
-    `/dev/shm/agnocast_type_registry/<ipc_ns_inode>/` exists and
-    contains at least one `<pid>.txt` (proves at least one Agnocast
+    ``/dev/shm/agnocast_type_registry/<ipc_ns_inode>/`` exists and
+    contains at least one ``<pid>.txt`` (proves at least one Agnocast
     process has registered).
 
 Exit code:
@@ -40,7 +40,7 @@ _GOSSIP_TOPIC = '/_agnocast_discovery'
 
 
 def _type_registry_base() -> str:
-    """Resolve the tmpfs root, honoring `AGNOCAST_TMPFS_DIR` like the writer."""
+    """Resolve the tmpfs root, honoring ``AGNOCAST_TMPFS_DIR`` like the writer."""
     root = os.environ.get('AGNOCAST_TMPFS_DIR') or '/dev/shm'
     return os.path.join(root, 'agnocast_type_registry')
 
@@ -64,7 +64,7 @@ def _check_daemon_process(my_ns_inode):
                 comm = fp.read().strip()
         except (FileNotFoundError, PermissionError):
             continue
-        # The discovery agent runs as a python script; its `comm` is the
+        # The discovery agent runs as a python script; its ``comm`` is the
         # python interpreter. We check cmdline for the agent's module name.
         try:
             with open(f'/proc/{pid}/cmdline', 'rb') as fp:

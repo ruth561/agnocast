@@ -1,7 +1,7 @@
 """Pure-logic tests for the discovery_daemon_status verb.
 
 The verb itself talks to /proc and DDS, but the small helpers are
-exercised here with a tmp directory in place of `/run/agnocast`.
+exercised here with a tmp directory in place of ``/run/agnocast``.
 """
 
 import os
@@ -60,7 +60,7 @@ def test_check_daemon_process_self_ns_no_match():
 
 
 def test_type_registry_base_honors_agnocast_tmpfs_dir(monkeypatch):
-    """`AGNOCAST_TMPFS_DIR` overrides the `/dev/shm` default consistently with the writer."""
+    """``AGNOCAST_TMPFS_DIR`` overrides the ``/dev/shm`` default consistently with the writer."""
     monkeypatch.setenv('AGNOCAST_TMPFS_DIR', '/run/custom')
     assert ds._type_registry_base() == '/run/custom/agnocast_type_registry'
 
