@@ -111,7 +111,13 @@ struct MqMsgDaemonBridge
 
 constexpr int64_t BRIDGE_MQ_MAX_MESSAGES = 2;
 constexpr int64_t PERFORMANCE_BRIDGE_MQ_MAX_MESSAGES = 256;
-constexpr int64_t DAEMON_BRIDGE_MQ_MAX_MESSAGES = 16;
+// Kept at or below the kernel default `/proc/sys/fs/mqueue/msg_max = 10`,
+// otherwise mq_open() returns EINVAL on hosts that have not raised the
+// limit (which would require CAP_SYS_RESOURCE). 8 is enough headroom for
+// the daemon's burst write pattern: even at Autoware-scale (~100
+// processes), a single per-NS daemon tick can only enqueue a handful of
+// bridge requests before the bridge_manager drains them.
+constexpr int64_t DAEMON_BRIDGE_MQ_MAX_MESSAGES = 8;
 constexpr int64_t BRIDGE_MQ_MESSAGE_SIZE = sizeof(MqMsgBridge);
 constexpr int64_t PERFORMANCE_BRIDGE_MQ_MESSAGE_SIZE = sizeof(MqMsgPerformanceBridge);
 constexpr int64_t DAEMON_BRIDGE_MQ_MESSAGE_SIZE = sizeof(MqMsgDaemonBridge);
