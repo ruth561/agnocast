@@ -42,6 +42,7 @@
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <mqueue.h>
+#include <unistd.h>
 
 #include <cerrno>
 #include <cstdint>
@@ -183,17 +184,55 @@ inline void notify_bridge_manager_of_factory(const std::string & type_name)
     return;
   }
 
+  // Detect overruns of the small shared_lib_path buffer before sending so
+  // the bridge_manager doesn't try to dlopen a truncated path. The buffer is
+  // sized for typical Linux .so paths (see comment on
+  // FACTORY_REGISTER_SHARED_LIB_PATH_BUFFER_SIZE). If your library lives
+  // somewhere deeper, the cross-IPC-NS bridge for this type stays disabled
+  // until the path can fit.
+  const std::size_t lib_path_len = std::strlen(info_a2r.dli_fname);
+  if (lib_path_len >= sizeof(MqMsgFactoryRegister{}.shared_lib_path)) {
+    RCLCPP_WARN_ONCE(
+      rclcpp::get_logger("agnocast"),
+      "Shared library path for type '%s' is %zu bytes, exceeds the %zu-byte buffer "
+      "in MqMsgFactoryRegister; skipping factory pre-register.",
+      type_name.c_str(), lib_path_len, sizeof(MqMsgFactoryRegister{}.shared_lib_path));
+    if (mq_close(fd) == -1) {
+      RCLCPP_WARN_ONCE(
+        rclcpp::get_logger("agnocast"), "Failed to close factory register MQ '%s': %s.",
+        mq_name.c_str(), std::strerror(errno));
+    }
+    return;
+  }
+
   MqMsgFactoryRegister msg{};
   std::strncpy(msg.type_name, type_name.c_str(), sizeof(msg.type_name) - 1);
   std::strncpy(msg.shared_lib_path, info_a2r.dli_fname, sizeof(msg.shared_lib_path) - 1);
   msg.fn_offset_a2r = fn_a2r_addr - reinterpret_cast<uintptr_t>(info_a2r.dli_fbase);
   msg.fn_offset_r2a = fn_r2a_addr - reinterpret_cast<uintptr_t>(info_r2a.dli_fbase);
 
-  if (mq_send(fd, reinterpret_cast<const char *>(&msg), sizeof(msg), 0) == -1) {
+  // Retry on EAGAIN: the small max_messages (2) tightens RLIMIT_MSGQUEUE
+  // pressure but means a burst of `register_bridge_factory<T>()` calls can
+  // transiently fill the queue before the bridge_manager drains it. Same
+  // retry shape as `send_mq_message` in agnocast_bridge_node.hpp.
+  constexpr int FACTORY_REGISTER_SEND_MAX_RETRIES = 100;
+  constexpr useconds_t FACTORY_REGISTER_SEND_RETRY_INTERVAL_US = 100000;  // 100 ms
+  int send_result = -1;
+  int last_errno = 0;
+  for (int retry = 0; retry <= FACTORY_REGISTER_SEND_MAX_RETRIES; ++retry) {
+    send_result = mq_send(fd, reinterpret_cast<const char *>(&msg), sizeof(msg), 0);
+    if (send_result == 0) break;
+    last_errno = errno;
+    if (last_errno != EAGAIN) break;
+    if (retry < FACTORY_REGISTER_SEND_MAX_RETRIES) {
+      usleep(FACTORY_REGISTER_SEND_RETRY_INTERVAL_US);
+    }
+  }
+  if (send_result < 0) {
     RCLCPP_WARN_ONCE(
       rclcpp::get_logger("agnocast"),
       "Failed to send factory register msg for type '%s' on MQ '%s': %s.", type_name.c_str(),
-      mq_name.c_str(), std::strerror(errno));
+      mq_name.c_str(), std::strerror(last_errno));
   }
   if (mq_close(fd) == -1) {
     RCLCPP_WARN_ONCE(
