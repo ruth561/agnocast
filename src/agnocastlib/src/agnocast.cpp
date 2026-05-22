@@ -6,16 +6,21 @@
 #include "agnocast/bridge/performance/agnocast_performance_bridge_manager.hpp"
 #include "agnocast/bridge/standard/agnocast_standard_bridge_manager.hpp"
 
+#include <dirent.h>
 #include <dlfcn.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <span>
+#include <string>
 #include <vector>
 
 extern "C" {
@@ -180,6 +185,53 @@ initialize_agnocast_result acquire_agnocast_resources_for_bridge(BridgeMode brid
     mempool_ptr,
     add_process_args.ret_shm_size,
   };
+}
+
+// On startup, sweep /dev/mqueue/ for agnocast-owned POSIX MQs whose `@<pid>`
+// suffix references a pid that no longer exists. This self-heals leaks from
+// previous runs where a bridge_manager exited abnormally (SIGKILL, crash) and
+// the previous `poll_for_unlink` daemon also exited before it could process
+// the kmod's do_exit hook for that pid. Without this sweep, leaked MQs
+// accumulate against `RLIMIT_MSGQUEUE` (per real UID) across repeated launch
+// cycles until `mq_open` returns EMFILE.
+//
+// Idempotent and bounded (`/dev/mqueue/` is small). Pid reuse race is benign:
+// if a leaked MQ's pid happens to be alive again (= a different process), we
+// skip it and the leak persists at most until the next sweep.
+static void sweep_orphan_agnocast_mqs()
+{
+  DIR * d = opendir("/dev/mqueue");
+  if (d == nullptr) {
+    return;
+  }
+  struct dirent * e = nullptr;
+  while ((e = readdir(d)) != nullptr) {
+    if (e->d_name[0] == '.') {
+      continue;
+    }
+    const char * at = std::strrchr(e->d_name, '@');
+    if (at == nullptr) {
+      continue;
+    }
+    const bool is_agnocast_pid_mq = std::strncmp(e->d_name, "agnocast_bridge_manager", 23) == 0 ||
+                                    std::strncmp(e->d_name, "agnocast_daemon_bridge", 22) == 0 ||
+                                    std::strncmp(e->d_name, "agnocast_factory_register", 25) == 0;
+    if (!is_agnocast_pid_mq) {
+      continue;
+    }
+    const pid_t pid = static_cast<pid_t>(std::atoi(at + 1));
+    if (pid <= 0) {
+      continue;
+    }
+    char proc_path[64];
+    std::snprintf(proc_path, sizeof(proc_path), "/proc/%d", pid);
+    if (access(proc_path, F_OK) == 0) {
+      continue;  // owner still alive
+    }
+    const std::string mq_name = std::string("/") + e->d_name;
+    mq_unlink(mq_name.c_str());
+  }
+  closedir(d);
 }
 
 void poll_for_unlink()
@@ -486,6 +538,18 @@ struct initialize_agnocast_result initialize_agnocast(
     close(agnocast_fd);
     exit(EXIT_FAILURE);
   }
+
+  // Self-heal POSIX MQs left behind by previous runs where a bridge_manager
+  // exited abnormally (SIGKILL, crash) before its destructor could `mq_unlink`
+  // its own MQs. Without this, leaked MQs accumulate against
+  // `RLIMIT_MSGQUEUE` (per real UID) across repeated launch cycles until
+  // `mq_open` returns EMFILE. Done here (every Agnocast process init) rather
+  // than in `poll_for_unlink` only, because the unlink-daemon fork is gated
+  // on the kmod's `ret_unlink_daemon_exist` and the second+ Agnocast process
+  // in the same IPC NS would otherwise never get a chance to sweep.
+  // Idempotent and bounded (`/dev/mqueue/` is small). Pid reuse race is
+  // benign: live owners are skipped.
+  sweep_orphan_agnocast_mqs();
 
   union ioctl_add_process_args add_process_args = {};
   if (ioctl(agnocast_fd, AGNOCAST_ADD_PROCESS_CMD, &add_process_args) < 0) {
