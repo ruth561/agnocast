@@ -184,12 +184,9 @@ inline void notify_bridge_manager_of_factory(const std::string & type_name)
     return;
   }
 
-  // Detect overruns of the small shared_lib_path buffer before sending so
-  // the bridge_manager doesn't try to dlopen a truncated path. The buffer is
-  // sized for typical Linux .so paths (see comment on
-  // FACTORY_REGISTER_SHARED_LIB_PATH_BUFFER_SIZE). If your library lives
-  // somewhere deeper, the cross-IPC-NS bridge for this type stays disabled
-  // until the path can fit.
+  // Catch path truncation up-front rather than letting bridge_manager dlopen
+  // a truncated string. See FACTORY_REGISTER_SHARED_LIB_PATH_BUFFER_SIZE
+  // for the trade-off.
   const std::size_t lib_path_len = std::strlen(info_a2r.dli_fname);
   if (lib_path_len >= sizeof(MqMsgFactoryRegister{}.shared_lib_path)) {
     RCLCPP_WARN_ONCE(
@@ -211,10 +208,8 @@ inline void notify_bridge_manager_of_factory(const std::string & type_name)
   msg.fn_offset_a2r = fn_a2r_addr - reinterpret_cast<uintptr_t>(info_a2r.dli_fbase);
   msg.fn_offset_r2a = fn_r2a_addr - reinterpret_cast<uintptr_t>(info_r2a.dli_fbase);
 
-  // Retry on EAGAIN: the small max_messages (2) tightens RLIMIT_MSGQUEUE
-  // pressure but means a burst of `register_bridge_factory<T>()` calls can
-  // transiently fill the queue before the bridge_manager drains it. Same
-  // retry shape as `send_mq_message` in agnocast_bridge_node.hpp.
+  // EAGAIN retry: `max_messages=2` (RLIMIT_MSGQUEUE budget) can transiently
+  // fill under bursts; same retry shape as `send_mq_message`.
   constexpr int FACTORY_REGISTER_SEND_MAX_RETRIES = 100;
   constexpr useconds_t FACTORY_REGISTER_SEND_RETRY_INTERVAL_US = 100000;  // 100 ms
   int send_result = -1;

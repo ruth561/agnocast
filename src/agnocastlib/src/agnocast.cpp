@@ -187,17 +187,14 @@ initialize_agnocast_result acquire_agnocast_resources_for_bridge(BridgeMode brid
   };
 }
 
-// On startup, sweep /dev/mqueue/ for agnocast-owned POSIX MQs whose `@<pid>`
-// suffix references a pid that no longer exists. This self-heals leaks from
-// previous runs where a bridge_manager exited abnormally (SIGKILL, crash) and
-// the previous `poll_for_unlink` daemon also exited before it could process
-// the kmod's do_exit hook for that pid. Without this sweep, leaked MQs
-// accumulate against `RLIMIT_MSGQUEUE` (per real UID) across repeated launch
-// cycles until `mq_open` returns EMFILE.
+// Self-heals POSIX MQs left behind by an abnormally-exited bridge_manager
+// (SIGKILL, crash) when the previous `poll_for_unlink` daemon also died
+// before processing the kmod's `do_exit` hook for that pid. Without this,
+// leaked MQs accumulate against `RLIMIT_MSGQUEUE` (per real UID) across
+// launch cycles until `mq_open` returns EMFILE.
 //
-// Idempotent and bounded (`/dev/mqueue/` is small). Pid reuse race is benign:
-// if a leaked MQ's pid happens to be alive again (= a different process), we
-// skip it and the leak persists at most until the next sweep.
+// Pid reuse race is benign: live owners are skipped, so the leak persists
+// at most until the next sweep.
 static void sweep_orphan_agnocast_mqs()
 {
   DIR * d = opendir("/dev/mqueue");
@@ -539,16 +536,10 @@ struct initialize_agnocast_result initialize_agnocast(
     exit(EXIT_FAILURE);
   }
 
-  // Self-heal POSIX MQs left behind by previous runs where a bridge_manager
-  // exited abnormally (SIGKILL, crash) before its destructor could `mq_unlink`
-  // its own MQs. Without this, leaked MQs accumulate against
-  // `RLIMIT_MSGQUEUE` (per real UID) across repeated launch cycles until
-  // `mq_open` returns EMFILE. Done here (every Agnocast process init) rather
-  // than in `poll_for_unlink` only, because the unlink-daemon fork is gated
-  // on the kmod's `ret_unlink_daemon_exist` and the second+ Agnocast process
-  // in the same IPC NS would otherwise never get a chance to sweep.
-  // Idempotent and bounded (`/dev/mqueue/` is small). Pid reuse race is
-  // benign: live owners are skipped.
+  // Called on every Agnocast process init rather than only in
+  // `poll_for_unlink` because the unlink-daemon fork is gated on the kmod's
+  // `ret_unlink_daemon_exist`; the second+ Agnocast process in the same IPC
+  // NS would otherwise never get a chance to sweep.
   sweep_orphan_agnocast_mqs();
 
   union ioctl_add_process_args add_process_args = {};

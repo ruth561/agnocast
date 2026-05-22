@@ -12,16 +12,11 @@ inline pid_t standard_bridge_manager_pid = 0;
 inline constexpr pid_t PERFORMANCE_BRIDGE_VIRTUAL_PID = -1;
 
 inline constexpr size_t SHARED_LIB_PATH_BUFFER_SIZE = 4096;  // Linux PATH_MAX is 4096
-// MqMsgFactoryRegister sits on a per-bridge_manager auxiliary MQ, so its
-// kernel accounting is multiplied by the number of Standard-mode
-// bridge_managers in the IPC namespace (each user process forks one). A full
-// PATH_MAX buffer there blows past `RLIMIT_MSGQUEUE` (default 819200 bytes
-// per real UID) once a handful of bridge_managers are live in parallel —
-// e.g. running `e2e_test_1to1.bash -p 32` exhausts the limit. Real Autoware
-// `.so` paths (`/opt/ros/.../lib*.so`, `/home/<user>/autoware/install/.../lib*.so`)
-// are well under this; values that exceed it fail the
-// `register_bridge_factory<T>()` notification with a one-shot WARN and the
-// cross-IPC-NS bridge for that type stays disabled until the path shortens.
+// Per-bridge_manager MQ accounting scales with bridge_manager count, so a
+// full `PATH_MAX` buffer here exhausts `RLIMIT_MSGQUEUE` (default 819200
+// bytes per real UID) under modest parallelism. 512 covers typical Linux
+// `.so` paths; longer paths produce a one-shot WARN and the cross-IPC-NS
+// bridge for that type stays disabled until the path can fit.
 inline constexpr size_t FACTORY_REGISTER_SHARED_LIB_PATH_BUFFER_SIZE = 512;
 inline constexpr size_t SYMBOL_NAME_BUFFER_SIZE = 256;
 inline constexpr size_t SERVICE_NAME_BUFFER_SIZE = 256;
@@ -147,24 +142,17 @@ struct MqMsgFactoryRegister
 
 constexpr int64_t BRIDGE_MQ_MAX_MESSAGES = 2;
 constexpr int64_t PERFORMANCE_BRIDGE_MQ_MAX_MESSAGES = 256;
-// The two aux MQs below are per-Standard-bridge_manager, so their kernel
-// accounting (which has a ~3.3 KB floor per MQ on Linux regardless of
-// max_messages × msg_size, plus max_messages × msg_size on top) is
-// multiplied by the number of bridge_managers in the IPC namespace. Each
-// extra message slot costs another msg_size against `RLIMIT_MSGQUEUE`
-// (default 819200 bytes per real UID). Kept at 2 — matching the primary
-// `BRIDGE_MQ_MAX_MESSAGES` — to stay near the per-MQ overhead floor: a
-// single per-Pub/Sub register request and the daemon's one-per-bridge
-// dispatch both fit comfortably, and `notify_bridge_manager_of_factory` /
-// `send_mq_message` retry on EAGAIN so transient fullness is handled.
+// The two aux MQs below are per-Standard-bridge_manager. Linux POSIX MQ
+// accounting has a ~3.3 KB floor per MQ plus `max_messages * msg_size`,
+// multiplied by the number of bridge_managers in the IPC namespace —
+// keeping `max_messages` at 2 (matching `BRIDGE_MQ_MAX_MESSAGES`) keeps
+// each aux MQ near the floor. Senders retry on EAGAIN
+// (`notify_bridge_manager_of_factory` / `send_mq_message`), so transient
+// fullness is harmless.
 constexpr int64_t DAEMON_BRIDGE_MQ_MAX_MESSAGES = 2;
 constexpr int64_t BRIDGE_MQ_MESSAGE_SIZE = sizeof(MqMsgBridge);
 constexpr int64_t PERFORMANCE_BRIDGE_MQ_MESSAGE_SIZE = sizeof(MqMsgPerformanceBridge);
 constexpr int64_t DAEMON_BRIDGE_MQ_MESSAGE_SIZE = sizeof(MqMsgDaemonBridge);
-// Same `RLIMIT_MSGQUEUE` reasoning as DAEMON_BRIDGE_MQ_MAX_MESSAGES. One
-// write per `Publisher<T>` / `Subscription<T>` construction; node-startup
-// bursts are bounded by the number of pub/sub endpoints and absorbed by
-// the EAGAIN retry on the user side.
 constexpr int64_t FACTORY_REGISTER_MQ_MAX_MESSAGES = 2;
 constexpr int64_t FACTORY_REGISTER_MQ_MESSAGE_SIZE = sizeof(MqMsgFactoryRegister);
 constexpr mode_t BRIDGE_MQ_PERMS = 0600;
