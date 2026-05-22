@@ -211,6 +211,20 @@ void poll_for_unlink()
         const std::string mq_name = create_mq_name_for_bridge(get_exit_process_args.ret_pid);
         mq_unlink(mq_name.c_str());
 
+        // The daemon-originated bridge MQ and the factory pre-register MQ are
+        // aux MQs owned by the Standard-mode bridge_manager. Its destructor
+        // unlinks them on graceful shutdown; here we also unlink them when the
+        // process exits abnormally (SIGKILL, crash) so leaked MQs do not
+        // accumulate against RLIMIT_MSGQUEUE. ENOENT is expected when the
+        // process was not a bridge_manager or already cleaned up.
+        const std::string daemon_bridge_mq_name =
+          create_mq_name_for_daemon_bridge(get_exit_process_args.ret_pid);
+        mq_unlink(daemon_bridge_mq_name.c_str());
+
+        const std::string factory_register_mq_name =
+          create_mq_name_for_factory_register(get_exit_process_args.ret_pid);
+        mq_unlink(factory_register_mq_name.c_str());
+
         // Unlink subscription MQs that the exited process owned
         for (uint32_t i = 0; i < get_exit_process_args.ret_subscription_mq_info_num; i++) {
           // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-array-to-pointer-decay,hicpp-no-array-decay)
