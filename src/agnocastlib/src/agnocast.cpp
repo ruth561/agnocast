@@ -201,7 +201,7 @@ static void sweep_orphan_agnocast_mqs()
   if (d == nullptr) {
     return;
   }
-  struct dirent * e = nullptr;
+  const struct dirent * e = nullptr;
   while ((e = readdir(d)) != nullptr) {
     if (e->d_name[0] == '.') {
       continue;
