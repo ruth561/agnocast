@@ -95,7 +95,7 @@ std::string create_mq_name_for_daemon_bridge(const pid_t pid)
   if (pid == PERFORMANCE_BRIDGE_VIRTUAL_PID) {
     std::string name = PERFORMANCE_DAEMON_BRIDGE_MQ_NAME;
     const char * domain_id = getenv("ROS_DOMAIN_ID");
-    if (domain_id != nullptr) {
+    if (domain_id != nullptr && domain_id[0] != '\0') {
       name += "_d" + std::string(domain_id);
     }
     return name;

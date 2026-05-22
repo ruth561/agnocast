@@ -4,18 +4,21 @@
 // Per-process file writer that announces every `Publisher<T>` and
 // `Subscription<T>` registration to the per-IPC-namespace
 // `ros2agnocast_discovery_agent` via a tmpfs file under
-// `/dev/shm/agnocast_type_registry/<ipc_ns_inode>/<pid>.txt`.
+// `${AGNOCAST_TMPFS_DIR:-/dev/shm}/agnocast_type_registry/<ipc_ns_inode>/<pid>.txt`.
 //
 // Each line is tab-separated and `\n`-terminated:
 //
-//   <topic_name>\t<type_name>\t<role>\t<node_name>\n
+//   <topic_name>\t<type_name>\t<role>\t<node_name>\t<bridge_manager_pid>\n
 //
-// `role` is `"pub"` or `"sub"`. The daemon scans the directory once per
-// tick and joins the discovered `(topic, role, node_name)` triples with
-// the kmod's per-IPC-NS endpoint list (which lacks both type and pid) to
-// populate `AgnocastTopic.type_name` and `AgnocastEndpoint.pid` on the
-// gossip publication. The pid lives in the filename; everything else
-// lives in the line content.
+// `role` is `"pub"` or `"sub"`. The 5th field carries the Standard-mode
+// bridge_manager pid the daemon should target when dispatching a
+// `MqMsgDaemonBridge` for this endpoint (0 in Performance mode). The
+// daemon scans the directory once per tick and joins the discovered
+// `(topic, role, node_name)` triples with the kmod's per-IPC-NS endpoint
+// list (which lacks both type and pid) to populate
+// `AgnocastTopic.type_name` and `AgnocastEndpoint.pid` on the gossip
+// publication. The user-process pid lives in the filename; everything
+// else lives in the line content.
 //
 // The writer is a per-process singleton. The first `register_type` call
 // lazily creates the namespace directory and opens the per-pid file in
@@ -53,8 +56,9 @@ public:
     const std::string & topic_name, const std::string & type_name, const std::string & role,
     const std::string & node_name, pid_t bridge_manager_pid);
 
-  // Test seam: override the tmpfs base directory (default `/run/agnocast`).
-  // Must be called before the first `register_type`.
+  // Test seam: override the tmpfs base directory (default
+  // `${AGNOCAST_TMPFS_DIR:-/dev/shm}/agnocast_type_registry`). Must be
+  // called before the first `register_type`.
   static void set_base_dir_for_test(const std::string & dir);
 
   // Test seam: return the on-disk path this writer will use, given the

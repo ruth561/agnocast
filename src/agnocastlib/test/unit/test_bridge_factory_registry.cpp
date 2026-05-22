@@ -6,6 +6,15 @@
 // and the SFINAE gate on `register_bridge_factory<T>()` (no-op for service
 // types).
 
+// `agnocast/agnocast.hpp` is included (in addition to
+// `agnocast/internal/bridge_factory_registry.hpp`) because
+// `register_bridge_factory<T>()` builds lambdas that call
+// `start_{a2r,r2a}_pubsub_node<MessageT>()`. Those templates are only
+// *defined* in `agnocast/bridge/agnocast_bridge_node.hpp` (which the
+// umbrella header pulls in); on toolchains that diagnose implicit
+// instantiation of an undefined template, omitting it can fail to
+// compile.
+#include "agnocast/agnocast.hpp"
 #include "agnocast/internal/bridge_factory_registry.hpp"
 
 #include <rcl_interfaces/srv/get_parameters.hpp>

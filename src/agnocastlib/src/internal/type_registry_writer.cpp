@@ -52,7 +52,17 @@ bool ensure_dir(const std::string & path, mode_t mode)
     return true;
   }
   if (errno == EEXIST) {
-    return true;
+    // Verify the existing entry is actually a directory. A regular file at
+    // the same path would let mkdir succeed-via-EEXIST and then surface
+    // confusing failures further down (e.g. when opening the per-pid file
+    // inside it).
+    struct stat st
+    {
+    };
+    if (stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
+      return true;
+    }
+    return false;
   }
   return false;
 }
@@ -166,10 +176,12 @@ void TypeRegistryWriter::register_type(
   line.append(node_name).push_back('\t');
   line.append(bm_pid_str).push_back('\n');
 
-  // `write` is atomic up to PIPE_BUF for regular files on Linux; lines are
-  // well under that. We retry on EINTR but ignore short writes (a partial
-  // line ends without `\n` and the daemon's parser skips unterminated
-  // tails).
+  // Concurrent-writer safety here comes from `mutex_` (single writer per
+  // process at a time) and `O_APPEND` on the underlying fd (each `write`
+  // is positioned at end-of-file by the kernel). PIPE_BUF atomicity does
+  // not apply to regular files. We retry on EINTR but tolerate short
+  // writes — a partial line ends without `\n` and the daemon's parser
+  // skips unterminated tails.
   const char * data = line.data();
   size_t remaining = line.size();
   while (remaining > 0) {
