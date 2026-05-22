@@ -4,9 +4,9 @@ Compares the local AgnocastDaemonState with remote (cross-NS / cross-ECU)
 snapshots gathered through gossip and emits ``MqMsgDaemonBridge`` requests
 to the in-namespace bridge_manager MQs:
 
-  * Standard mode:  ``/agnocast_daemon_bridge@<pid>`` (broadcast to every
-    running bridge_manager so the one whose process registered the type
-    factory picks it up).
+  * Standard mode: ``/agnocast_daemon_bridge@<bm_pid>`` — targeted at the
+    bridge_manager whose user process owns the matching Agnocast endpoint
+    (bm_pid is read from the tmpfs type registry).
   * Performance mode: ``/agnocast_daemon_bridge_perf[_d<ROS_DOMAIN_ID>]``
     (one MQ per IPC namespace).
 
@@ -191,7 +191,7 @@ def decide_bridges(local_state, remote_states, registry=None) -> list:
 
 
 def _standard_mq_name(pid: int) -> str:
-    """Return the Standard-mode bridge_manager MQ name for a given user pid."""
+    """Return the Standard-mode bridge_manager MQ name for a given bm_pid."""
     return f'/agnocast_daemon_bridge@{pid}'
 
 
@@ -253,8 +253,8 @@ def dispatch_requests(requests: Iterable[BridgeRequest], logger=None) -> None:
     for req in requests:
         payload = serialize_request(req)
         if (err := send_request(perf_mq, payload)) is not None and logger is not None:
-            logger.warning('daemon bridge dispatch failed: %s', err)
+            logger.warn('daemon bridge dispatch failed: %s', err)
         if req.target_pid > 0:
             std_mq = _standard_mq_name(req.target_pid)
             if (err := send_request(std_mq, payload)) is not None and logger is not None:
-                logger.warning('daemon bridge dispatch failed: %s', err)
+                logger.warn('daemon bridge dispatch failed: %s', err)
