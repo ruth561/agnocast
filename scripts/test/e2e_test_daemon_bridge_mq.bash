@@ -65,8 +65,7 @@ trap cleanup EXIT
 fail() {
     red "ERROR: $1"
     [ -n "${2:-}" ] && { echo "----- output -----" >&2; printf '%s\n' "$2" >&2; }
-    [ -f "$LOG_DIR/agent.log" ]  && { echo "----- agent log -----"  >&2; cat "$LOG_DIR/agent.log"  >&2; }
-    [ -f "$LOG_DIR/talker.log" ] && { echo "----- talker log -----" >&2; cat "$LOG_DIR/talker.log" >&2; }
+    [ -f "$LOG_DIR/talker.log" ] && { echo "----- talker log (incl. discovery_agent) -----" >&2; cat "$LOG_DIR/talker.log" >&2; }
     exit 2
 }
 
@@ -92,13 +91,16 @@ if [ -z "$primary_mq" ]; then
 fi
 green "✓ primary bridge_manager MQ still present"
 
-# ----- launch daemon -----
-yellow "Starting discovery_agent..."
-ros2 run ros2agnocast_discovery_agent discovery_agent > "$LOG_DIR/agent.log" 2>&1 &
+# ----- verify discovery_agent is up -----
+# talker.launch.xml brings up exactly one discovery_agent in this IPC
+# namespace via `<include discovery_agent.launch.xml ... if="..."/>`. The
+# agent's own `flock(2)` singleton check guarantees one per namespace, so
+# we don't spawn a second one here — just confirm the launched agent
+# emitted its startup banner.
 sleep "$DAEMON_WARMUP_SEC"
 
-if ! grep -q "discovery_agent up" "$LOG_DIR/agent.log"; then
-    fail "daemon did not log startup within ${DAEMON_WARMUP_SEC}s"
+if ! grep -q "discovery_agent up" "$LOG_DIR/talker.log"; then
+    fail "discovery_agent did not log startup within (${TALKER_WARMUP_SEC}+${DAEMON_WARMUP_SEC})s"
 fi
 green "✓ daemon up"
 
@@ -109,8 +111,8 @@ green "✓ daemon up"
 # bridge_manager MQ must still exist.
 sleep "$DISPATCH_WARMUP_SEC"
 
-if grep -q "Traceback" "$LOG_DIR/agent.log"; then
-    fail "daemon crashed during decider tick" "$(cat "$LOG_DIR/agent.log")"
+if grep -q "Traceback" "$LOG_DIR/talker.log"; then
+    fail "discovery_agent crashed during decider tick" "$(cat "$LOG_DIR/talker.log")"
 fi
 
 if ! ls /dev/mqueue/agnocast_daemon_bridge@* > /dev/null 2>&1; then
