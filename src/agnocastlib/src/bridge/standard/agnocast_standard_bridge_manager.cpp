@@ -207,20 +207,20 @@ void StandardBridgeManager::on_factory_register_request(mqd_t fd)
         is_self_exe = true;
       }
     }
-    void * handle = is_self_exe ? dlopen(nullptr, RTLD_NOW)
-                                : dlopen(lib_path.c_str(), RTLD_NOW | RTLD_LOCAL);
+    void * handle =
+      is_self_exe ? dlopen(nullptr, RTLD_NOW) : dlopen(lib_path.c_str(), RTLD_NOW | RTLD_LOCAL);
     if (handle == nullptr) {
       const char * err = dlerror();
       RCLCPP_WARN(
-        logger_, "dlopen('%s') failed: %s; skipping factory for type '%s'.",
-        lib_path.c_str(), err != nullptr ? err : "unknown", type_name.c_str());
+        logger_, "dlopen('%s') failed: %s; skipping factory for type '%s'.", lib_path.c_str(),
+        err != nullptr ? err : "unknown", type_name.c_str());
       continue;
     }
     struct link_map * lmap = nullptr;
     if (dlinfo(handle, RTLD_DI_LINKMAP, &lmap) != 0 || lmap == nullptr) {
       RCLCPP_WARN(
-        logger_, "dlinfo failed for '%s'; skipping factory for type '%s'.",
-        lib_path.c_str(), type_name.c_str());
+        logger_, "dlinfo failed for '%s'; skipping factory for type '%s'.", lib_path.c_str(),
+        type_name.c_str());
       dlclose(handle);
       continue;
     }
@@ -234,8 +234,8 @@ void StandardBridgeManager::on_factory_register_request(mqd_t fd)
     // library is small and only one handle per type, so the leak is bounded
     // by the cardinality of distinct registered types.
     RCLCPP_INFO(
-      logger_, "Registered factory for type '%s' from library '%s'.",
-      type_name.c_str(), lib_path.c_str());
+      logger_, "Registered factory for type '%s' from library '%s'.", type_name.c_str(),
+      lib_path.c_str());
   }
 }
 

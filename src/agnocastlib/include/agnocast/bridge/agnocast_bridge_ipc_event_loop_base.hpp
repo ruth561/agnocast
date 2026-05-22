@@ -14,6 +14,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <csignal>
@@ -151,11 +152,10 @@ inline bool IpcEventLoopBase::spin_once(int timeout_ms)
         handle_signal();
       }
     } else {
-      for (auto & aux : aux_mqs_) {
-        if (fd == aux.fd && aux.cb) {
-          aux.cb(fd);
-          break;
-        }
+      auto it = std::find_if(
+        aux_mqs_.begin(), aux_mqs_.end(), [fd](const AuxMq & aux) { return fd == aux.fd; });
+      if (it != aux_mqs_.end() && it->cb) {
+        it->cb(fd);
       }
     }
   }
@@ -335,8 +335,7 @@ inline void IpcEventLoopBase::cleanup_resources()
       }
       if (mq_unlink(aux.name.c_str()) == -1 && errno != ENOENT) {
         RCLCPP_WARN_STREAM(
-          logger_,
-          "Failed to unlink aux mq for mq_name='" << aux.name << "': " << strerror(errno));
+          logger_, "Failed to unlink aux mq for mq_name='" << aux.name << "': " << strerror(errno));
       }
     }
   }

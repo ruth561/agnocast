@@ -172,8 +172,8 @@ inline void notify_bridge_manager_of_factory(const std::string & type_name)
   // O_CREAT so that the user process can race the bridge_manager — whichever
   // side opens first creates the MQ. The kernel returns the existing MQ on
   // subsequent calls.
-  mqd_t fd = mq_open(
-    mq_name.c_str(), O_WRONLY | O_CREAT | O_NONBLOCK | O_CLOEXEC, BRIDGE_MQ_PERMS, &attr);
+  mqd_t fd =
+    mq_open(mq_name.c_str(), O_WRONLY | O_CREAT | O_NONBLOCK | O_CLOEXEC, BRIDGE_MQ_PERMS, &attr);
   if (fd == (mqd_t)-1) {
     RCLCPP_WARN_ONCE(
       rclcpp::get_logger("agnocast"),
@@ -192,8 +192,8 @@ inline void notify_bridge_manager_of_factory(const std::string & type_name)
   if (mq_send(fd, reinterpret_cast<const char *>(&msg), sizeof(msg), 0) == -1) {
     RCLCPP_WARN_ONCE(
       rclcpp::get_logger("agnocast"),
-      "Failed to send factory register msg for type '%s' on MQ '%s': %s.",
-      type_name.c_str(), mq_name.c_str(), std::strerror(errno));
+      "Failed to send factory register msg for type '%s' on MQ '%s': %s.", type_name.c_str(),
+      mq_name.c_str(), std::strerror(errno));
   }
   if (mq_close(fd) == -1) {
     RCLCPP_WARN_ONCE(
