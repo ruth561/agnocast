@@ -45,6 +45,9 @@ public:
     const std::string & service_name, BridgeDirection direction,
     const BridgeFactorySpec & factory_spec, const rclcpp::QoS & qos);
 
+  // Public for the bridge_manager's MqMsgFactoryRegister bounds check.
+  static bool is_address_in_library_code_segment(void * handle, uintptr_t addr);
+
 private:
   rclcpp::Node::SharedPtr container_node_;
   rclcpp::Logger logger_;
@@ -60,7 +63,6 @@ private:
   std::pair<uintptr_t, std::shared_ptr<void>> resolve_factory_function(
     const std::string & name, BridgeDirection direction, const BridgeFactorySpec & factory_spec,
     bool is_service);
-  static bool is_address_in_library_code_segment(void * handle, uintptr_t addr);
 };
 
 }  // namespace agnocast

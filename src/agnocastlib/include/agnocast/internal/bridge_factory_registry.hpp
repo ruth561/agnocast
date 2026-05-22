@@ -243,19 +243,26 @@ template <typename MessageT>
 void register_bridge_factory()
 {
   if constexpr (rosidl_generator_traits::is_message<MessageT>::value) {
-    const std::string type_name = rosidl_generator_traits::name<MessageT>();
-    BridgeFactoryEntry entry{
-      [](rclcpp::Node::SharedPtr node, const std::string & topic_name, const rclcpp::QoS & qos)
-        -> std::shared_ptr<PubsubBridgeBase> {
-        return start_a2r_pubsub_node<MessageT>(node, topic_name, qos);
-      },
-      [](rclcpp::Node::SharedPtr node, const std::string & topic_name, const rclcpp::QoS & qos)
-        -> std::shared_ptr<PubsubBridgeBase> {
-        return start_r2a_pubsub_node<MessageT>(node, topic_name, qos);
-      },
-    };
-    BridgeFactoryRegistry::instance().register_entry(type_name, std::move(entry));
-    notify_bridge_manager_of_factory<MessageT>(type_name);
+    // Once per `MessageT` per process. Every `Publisher<T>` / `Subscription<T>`
+    // ctor calls this, but repeating the MqMsgFactoryRegister send risks
+    // stalling on its EAGAIN retry and leaking dlopen handles on the
+    // bridge_manager (which intentionally never dlcloses).
+    static std::once_flag once;
+    std::call_once(once, []() {
+      const std::string type_name = rosidl_generator_traits::name<MessageT>();
+      BridgeFactoryEntry entry{
+        [](rclcpp::Node::SharedPtr node, const std::string & topic_name, const rclcpp::QoS & qos)
+          -> std::shared_ptr<PubsubBridgeBase> {
+          return start_a2r_pubsub_node<MessageT>(node, topic_name, qos);
+        },
+        [](rclcpp::Node::SharedPtr node, const std::string & topic_name, const rclcpp::QoS & qos)
+          -> std::shared_ptr<PubsubBridgeBase> {
+          return start_r2a_pubsub_node<MessageT>(node, topic_name, qos);
+        },
+      };
+      BridgeFactoryRegistry::instance().register_entry(type_name, std::move(entry));
+      notify_bridge_manager_of_factory<MessageT>(type_name);
+    });
   }
 }
 

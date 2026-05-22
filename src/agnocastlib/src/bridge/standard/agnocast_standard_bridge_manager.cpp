@@ -2,6 +2,7 @@
 
 #include "agnocast/agnocast_utils.hpp"
 #include "agnocast/bridge/agnocast_bridge_utils.hpp"
+#include "agnocast/bridge/standard/agnocast_standard_bridge_loader.hpp"
 #include "agnocast/internal/bridge_factory_registry.hpp"
 
 #include <dlfcn.h>
@@ -225,8 +226,24 @@ void StandardBridgeManager::on_factory_register_request(mqd_t fd)
       continue;
     }
     const uintptr_t base = static_cast<uintptr_t>(lmap->l_addr);
-    auto fn_a2r = reinterpret_cast<StartFn>(base + req.fn_offset_a2r);
-    auto fn_r2a = reinterpret_cast<StartFn>(base + req.fn_offset_r2a);
+    const uintptr_t addr_a2r = base + req.fn_offset_a2r;
+    const uintptr_t addr_r2a = base + req.fn_offset_r2a;
+    // Refuse to register a function pointer outside the library's code
+    // segments — otherwise the bridge could later jump anywhere.
+    if (
+      !StandardBridgeLoader::is_address_in_library_code_segment(handle, addr_a2r) ||
+      !StandardBridgeLoader::is_address_in_library_code_segment(handle, addr_r2a)) {
+      RCLCPP_WARN(
+        logger_,
+        "Factory function offsets for type '%s' resolve outside the executable segments of "
+        "'%s' (a2r=0x%lx r2a=0x%lx); skipping registration.",
+        type_name.c_str(), lib_path.c_str(), static_cast<unsigned long>(addr_a2r),
+        static_cast<unsigned long>(addr_r2a));
+      dlclose(handle);
+      continue;
+    }
+    auto fn_a2r = reinterpret_cast<StartFn>(addr_a2r);
+    auto fn_r2a = reinterpret_cast<StartFn>(addr_r2a);
     internal::BridgeFactoryEntry entry{fn_a2r, fn_r2a};
     internal::BridgeFactoryRegistry::instance().register_entry(type_name, std::move(entry));
     // NB: we intentionally don't dlclose() — the handle must stay alive
