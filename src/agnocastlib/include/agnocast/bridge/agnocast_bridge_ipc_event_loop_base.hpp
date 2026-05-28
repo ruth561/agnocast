@@ -11,7 +11,10 @@
 #include <mqueue.h>
 #include <sys/epoll.h>
 #include <sys/signalfd.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/time.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 #include <array>
@@ -58,6 +61,9 @@ private:
   int epoll_fd_ = -1;
   int signal_fd_ = -1;
 
+  int socket_fd_ = -1;
+  std::string socket_path_;
+
   mqd_t mq_fd_ = (mqd_t)-1;
   std::string mq_name_;
 
@@ -70,6 +76,7 @@ private:
   void setup_signals(
     const std::vector<int> & signals_to_block, const std::vector<int> & signals_to_ignore);
   void setup_epoll();
+  void setup_socket();
   void cleanup_resources();
 
   mqd_t create_and_open_mq(const std::string & name) const;
@@ -87,6 +94,7 @@ inline IpcEventLoopBase::IpcEventLoopBase(
   try {
     setup_mq();
     setup_signals(signals_to_block, signals_to_ignore);
+    setup_socket();
     setup_epoll();
   } catch (...) {
     cleanup_resources();
@@ -128,6 +136,23 @@ inline bool IpcEventLoopBase::spin_once(int timeout_ms)
       ssize_t s = read(signal_fd_, &fdsi, sizeof(struct signalfd_siginfo));
       if (s == sizeof(struct signalfd_siginfo)) {
         handle_signal();
+      }
+    } else if (fd == socket_fd_) {
+      int client_fd = accept4(socket_fd_, nullptr, nullptr, SOCK_CLOEXEC);
+      if (client_fd == -1) {
+        RCLCPP_WARN(logger_, "accept4 on control socket failed: %s", strerror(errno));
+      } else {
+        struct timeval tv
+        {
+        };
+        tv.tv_usec = 100 * 1000;  // 100ms
+        setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        char buf[4]{};
+        ssize_t n = recv(client_fd, buf, sizeof(buf), MSG_WAITALL);
+        if (n == 4 && std::memcmp(buf, "PING", 4) == 0) {
+          send(client_fd, "PONG", 4, MSG_NOSIGNAL);
+        }
+        close(client_fd);
       }
     }
   }
@@ -177,6 +202,54 @@ inline void IpcEventLoopBase::setup_epoll()
 
   add_fd_to_epoll(mq_fd_, "MQ");
   add_fd_to_epoll(signal_fd_, "Signal");
+  add_fd_to_epoll(socket_fd_, "Socket");
+}
+
+inline void IpcEventLoopBase::setup_socket()
+{
+  struct stat ns_stat
+  {
+  };
+  if (stat("/proc/self/ns/ipc", &ns_stat) == -1) {
+    throw std::system_error(errno, std::generic_category(), "stat /proc/self/ns/ipc failed");
+  }
+
+  const std::string root_dir = "/dev/shm/agnocast_bridge_control";
+  if (mkdir(root_dir.c_str(), 0755) == -1 && errno != EEXIST) {
+    throw std::system_error(errno, std::generic_category(), "mkdir failed: " + root_dir);
+  }
+
+  const std::string base_dir = root_dir + "/" + std::to_string(ns_stat.st_ino);
+  if (mkdir(base_dir.c_str(), 0755) == -1 && errno != EEXIST) {
+    throw std::system_error(errno, std::generic_category(), "mkdir failed: " + base_dir);
+  }
+
+  socket_path_ = base_dir + "/" + std::to_string(getpid()) + ".sock";
+
+  int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+  if (fd == -1) {
+    throw std::system_error(errno, std::generic_category(), "control socket() failed");
+  }
+  socket_fd_ = fd;
+
+  struct sockaddr_un addr
+  {
+  };
+  addr.sun_family = AF_UNIX;
+  if (socket_path_.size() >= sizeof(addr.sun_path)) {
+    throw std::runtime_error("Control socket path too long: " + socket_path_);
+  }
+  strncpy(addr.sun_path, socket_path_.c_str(), sizeof(addr.sun_path) - 1);
+
+  unlink(socket_path_.c_str());  // remove stale file if any
+
+  if (bind(socket_fd_, reinterpret_cast<struct sockaddr *>(&addr), sizeof(addr)) == -1) {
+    throw std::system_error(errno, std::generic_category(), "control socket bind failed");
+  }
+
+  if (listen(socket_fd_, 4) == -1) {
+    throw std::system_error(errno, std::generic_category(), "control socket listen failed");
+  }
 }
 
 inline mqd_t IpcEventLoopBase::create_and_open_mq(const std::string & name) const
@@ -243,6 +316,20 @@ inline sigset_t IpcEventLoopBase::block_signals_impl(const std::vector<int> & si
 
 inline void IpcEventLoopBase::cleanup_resources()
 {
+  if (socket_fd_ != -1) {
+    if (close(socket_fd_) == -1) {
+      RCLCPP_WARN(logger_, "Failed to close socket_fd: %s", strerror(errno));
+    }
+    socket_fd_ = -1;
+  }
+
+  if (!socket_path_.empty()) {
+    if (unlink(socket_path_.c_str()) == -1 && errno != ENOENT) {
+      RCLCPP_WARN(
+        logger_, "Failed to unlink control socket '%s': %s", socket_path_.c_str(), strerror(errno));
+    }
+  }
+
   if (epoll_fd_ != -1) {
     if (close(epoll_fd_) == -1) {
       RCLCPP_WARN(logger_, "Failed to close epoll_fd: %s", strerror(errno));
