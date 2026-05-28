@@ -316,6 +316,13 @@ inline sigset_t IpcEventLoopBase::block_signals_impl(const std::vector<int> & si
 
 inline void IpcEventLoopBase::cleanup_resources()
 {
+  if (epoll_fd_ != -1) {
+    if (close(epoll_fd_) == -1) {
+      RCLCPP_WARN(logger_, "Failed to close epoll_fd: %s", strerror(errno));
+    }
+    epoll_fd_ = -1;
+  }
+
   if (socket_fd_ != -1) {
     if (close(socket_fd_) == -1) {
       RCLCPP_WARN(logger_, "Failed to close socket_fd: %s", strerror(errno));
@@ -328,13 +335,6 @@ inline void IpcEventLoopBase::cleanup_resources()
       RCLCPP_WARN(
         logger_, "Failed to unlink control socket '%s': %s", socket_path_.c_str(), strerror(errno));
     }
-  }
-
-  if (epoll_fd_ != -1) {
-    if (close(epoll_fd_) == -1) {
-      RCLCPP_WARN(logger_, "Failed to close epoll_fd: %s", strerror(errno));
-    }
-    epoll_fd_ = -1;
   }
 
   if (signal_fd_ != -1) {
