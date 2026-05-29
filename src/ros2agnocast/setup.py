@@ -26,7 +26,7 @@ setup(
             'agnocast = ros2agnocast.command.agnocast:AgnocastCommand',
         ],
         'ros2agnocast.verb': [
-            'bridge = ros2agnocast.verb.bridge:BridgeVerb',
+            'bridge-daemon-status = ros2agnocast.verb.bridge:BridgeDaemonStatusVerb',
             'generate-bridge-plugins = ros2agnocast.verb.generate_bridge_plugins:GenerateBridgePluginsVerb',
             'version = ros2agnocast.verb.version:VersionVerb',
         ],

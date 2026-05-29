@@ -21,6 +21,10 @@ def _find_sock_files(ipc_inode: int) -> list[str]:
     return sorted(glob.glob(pattern))
 
 
+def _is_process_alive(pid: int) -> bool:
+    return os.path.isdir(f'/proc/{pid}')
+
+
 def _ping(sock_path: str, timeout_sec: float) -> tuple[str, dict]:
     """Connect to the control socket and return (status, info).
 
@@ -50,8 +54,8 @@ def _ping(sock_path: str, timeout_sec: float) -> tuple[str, dict]:
         sock.close()
 
 
-class BridgeVerb(VerbExtension):
-    """Check liveness of Agnocast Bridge processes via UDS control socket."""
+class BridgeDaemonStatusVerb(VerbExtension):
+    """Check liveness of Agnocast Bridge daemon processes via UDS control socket."""
 
     def add_arguments(self, parser, cli_name):
         parser.add_argument(
@@ -90,22 +94,30 @@ class BridgeVerb(VerbExtension):
 
         any_unhealthy = False
         for sock_path in sock_files:
-            pid = os.path.splitext(os.path.basename(sock_path))[0]
+            pid_str = os.path.splitext(os.path.basename(sock_path))[0]
+            try:
+                pid = int(pid_str)
+            except ValueError:
+                continue
+
+            if not _is_process_alive(pid):
+                label = '[Stale   ]'
+                extra = 'process no longer exists'
+                any_unhealthy = True
+                print(f'  PID {pid_str:>8s}  {label}  {extra}  {sock_path}')
+                continue
+
             status, info = _ping(sock_path, timeout_sec)
 
             if status == 'healthy':
                 label = '[Healthy  ]'
                 bridge_type = info.get('type', 'unknown')
                 extra = f'type={bridge_type}  ipc_ns={info.get("ipc_ns")}  pid={info.get("pid")}'
-            elif status == 'timeout':
-                label = '[Unhealthy / Stalled]'
-                extra = ''
-                any_unhealthy = True
             else:
-                label = '[Dead             ]'
-                extra = ''
+                label = '[Unhealthy]'
+                extra = 'process alive but ping failed'
                 any_unhealthy = True
 
-            print(f'  PID {pid:>8s}  {label}  {extra}  {sock_path}')
+            print(f'  PID {pid_str:>8s}  {label}  {extra}  {sock_path}')
 
         return 1 if any_unhealthy else 0
