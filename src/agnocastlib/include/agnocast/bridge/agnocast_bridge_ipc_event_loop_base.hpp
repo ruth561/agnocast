@@ -37,6 +37,7 @@ class IpcEventLoopBase
 public:
   using EventCallback = std::function<void(int)>;
   using SignalCallback = std::function<void()>;
+  using SocketCallback = std::function<std::string()>;
 
   IpcEventLoopBase(
     const rclcpp::Logger & logger, const std::string & mq_name, long mq_msg_size,
@@ -51,6 +52,7 @@ public:
 
   void set_mq_handler(EventCallback cb);
   void set_signal_handler(SignalCallback cb);
+  void set_socket_handler(SocketCallback cb);
 
   const std::string & get_mq_name() const { return mq_name_; }
 
@@ -72,6 +74,7 @@ private:
 
   EventCallback mq_cb_;
   SignalCallback signal_cb_;
+  SocketCallback socket_cb_;
 
   void setup_mq();
   void setup_signals(
@@ -82,6 +85,7 @@ private:
 
   mqd_t create_and_open_mq(const std::string & name) const;
   void add_fd_to_epoll(int fd, const std::string & label) const;
+  void handle_socket(int client_fd);
 
   static void ignore_signals_impl(const std::vector<int> & signals);
   static sigset_t block_signals_impl(const std::vector<int> & signals);
@@ -139,20 +143,11 @@ inline bool IpcEventLoopBase::spin_once(int timeout_ms)
         handle_signal();
       }
     } else if (fd == socket_fd_) {
-      int client_fd = accept4(socket_fd_, nullptr, nullptr, SOCK_CLOEXEC);
+      int client_fd = accept4(socket_fd_, nullptr, nullptr, SOCK_CLOEXEC | SOCK_NONBLOCK);
       if (client_fd == -1) {
         RCLCPP_WARN(logger_, "accept4 on socket failed: %s", strerror(errno));
       } else {
-        struct timeval tv
-        {
-        };
-        tv.tv_usec = 100 * 1000;  // 100ms
-        setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-        char buf[4]{};
-        ssize_t n = recv(client_fd, buf, sizeof(buf), MSG_WAITALL);
-        if (n == 4 && std::memcmp(buf, "PING", 4) == 0) {
-          send(client_fd, "PONG", 4, MSG_NOSIGNAL);
-        }
+        handle_socket(client_fd);
         close(client_fd);
       }
     }
@@ -165,6 +160,19 @@ inline void IpcEventLoopBase::handle_signal()
   if (signal_cb_) {
     signal_cb_();
   }
+}
+
+inline void IpcEventLoopBase::handle_socket(int client_fd)
+{
+  if (socket_cb_) {
+    const std::string response = socket_cb_();
+    send(client_fd, response.data(), response.size(), MSG_NOSIGNAL);
+  }
+}
+
+inline void IpcEventLoopBase::set_socket_handler(SocketCallback cb)
+{
+  socket_cb_ = std::move(cb);
 }
 
 inline void IpcEventLoopBase::set_mq_handler(EventCallback cb)

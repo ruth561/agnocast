@@ -1,12 +1,14 @@
+import json
 import os
 import socket
 import glob
 
 from ros2cli.verb import VerbExtension
 
-CONTROL_SOCKET_BASE_DIR = '/dev/shm/agnocast_bridge_control'
-PING_PAYLOAD = b'PING'
-PONG_PAYLOAD = b'PONG'
+CONTROL_SOCKET_BASE_DIR = os.path.join(
+    os.environ.get('AGNOCAST_TMPFS_DIR') or '/dev/shm',
+    'agnocast_bridge_control',
+)
 DEFAULT_TIMEOUT_SEC = 1.0
 
 
@@ -19,27 +21,37 @@ def _find_sock_files(ipc_inode: int) -> list[str]:
     return sorted(glob.glob(pattern))
 
 
-def _ping(sock_path: str, timeout_sec: float) -> str:
-    """Return 'healthy', 'timeout', or 'dead'."""
+def _ping(sock_path: str, timeout_sec: float) -> tuple[str, dict]:
+    """Connect to the control socket and return (status, info).
+
+    The daemon sends a JSON payload immediately on connection:
+    ``{"type":"standard"|"performance","ipc_ns":<int>,"pid":<int>}``
+
+    status is one of 'healthy', 'timeout', 'dead'.
+    info is the parsed JSON dict on success, or {} otherwise.
+    """
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         sock.settimeout(timeout_sec)
         sock.connect(sock_path)
-        sock.sendall(PING_PAYLOAD)
-        data = sock.recv(4)
-        if data == PONG_PAYLOAD:
-            return 'healthy'
-        return 'dead'
+        chunks = []
+        while True:
+            chunk = sock.recv(256)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        info = json.loads(b''.join(chunks).decode())
+        return 'healthy', info
     except socket.timeout:
-        return 'timeout'
-    except (ConnectionRefusedError, FileNotFoundError, OSError):
-        return 'dead'
+        return 'timeout', {}
+    except (ConnectionRefusedError, FileNotFoundError, OSError, json.JSONDecodeError):
+        return 'dead', {}
     finally:
         sock.close()
 
 
 class BridgeVerb(VerbExtension):
-    """Check liveness of Agnocast Performance Bridge processes via UDS control socket."""
+    """Check liveness of Agnocast Bridge processes via UDS control socket."""
 
     def add_arguments(self, parser, cli_name):
         parser.add_argument(
@@ -57,7 +69,7 @@ class BridgeVerb(VerbExtension):
             type=float,
             default=DEFAULT_TIMEOUT_SEC,
             metavar='SECONDS',
-            help=f'Timeout in seconds for each PING (default: {DEFAULT_TIMEOUT_SEC})',
+            help=f'Timeout in seconds for each ping (default: {DEFAULT_TIMEOUT_SEC})',
         )
 
     def main(self, *, args):
@@ -79,17 +91,21 @@ class BridgeVerb(VerbExtension):
         any_unhealthy = False
         for sock_path in sock_files:
             pid = os.path.splitext(os.path.basename(sock_path))[0]
-            status = _ping(sock_path, timeout_sec)
+            status, info = _ping(sock_path, timeout_sec)
 
             if status == 'healthy':
                 label = '[Healthy  ]'
+                bridge_type = info.get('type', 'unknown')
+                extra = f'type={bridge_type}  ipc_ns={info.get("ipc_ns")}  pid={info.get("pid")}'
             elif status == 'timeout':
                 label = '[Unhealthy / Stalled]'
+                extra = ''
                 any_unhealthy = True
             else:
                 label = '[Dead             ]'
+                extra = ''
                 any_unhealthy = True
 
-            print(f'  PID {pid:>8s}  {label}  {sock_path}')
+            print(f'  PID {pid:>8s}  {label}  {extra}  {sock_path}')
 
         return 1 if any_unhealthy else 0
