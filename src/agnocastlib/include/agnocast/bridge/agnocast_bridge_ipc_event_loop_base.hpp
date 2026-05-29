@@ -20,6 +20,7 @@
 #include <array>
 #include <cerrno>
 #include <csignal>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <initializer_list>
@@ -140,7 +141,7 @@ inline bool IpcEventLoopBase::spin_once(int timeout_ms)
     } else if (fd == socket_fd_) {
       int client_fd = accept4(socket_fd_, nullptr, nullptr, SOCK_CLOEXEC);
       if (client_fd == -1) {
-        RCLCPP_WARN(logger_, "accept4 on control socket failed: %s", strerror(errno));
+        RCLCPP_WARN(logger_, "accept4 on socket failed: %s", strerror(errno));
       } else {
         struct timeval tv
         {
@@ -207,19 +208,14 @@ inline void IpcEventLoopBase::setup_epoll()
 
 inline void IpcEventLoopBase::setup_socket()
 {
-  struct stat ns_stat
-  {
-  };
-  if (stat("/proc/self/ns/ipc", &ns_stat) == -1) {
-    throw std::system_error(errno, std::generic_category(), "stat /proc/self/ns/ipc failed");
-  }
-
-  const std::string root_dir = "/dev/shm/agnocast_bridge_control";
+  const char * env = std::getenv("AGNOCAST_TMPFS_DIR");
+  const std::string root_dir =
+    std::string(env != nullptr && *env != '\0' ? env : "/dev/shm") + "/agnocast_bridge_control";
   if (mkdir(root_dir.c_str(), 0755) == -1 && errno != EEXIST) {
     throw std::system_error(errno, std::generic_category(), "mkdir failed: " + root_dir);
   }
 
-  const std::string base_dir = root_dir + "/" + std::to_string(ns_stat.st_ino);
+  const std::string base_dir = root_dir + "/" + std::to_string(get_self_ipc_ns_inode());
   if (mkdir(base_dir.c_str(), 0755) == -1 && errno != EEXIST) {
     throw std::system_error(errno, std::generic_category(), "mkdir failed: " + base_dir);
   }
@@ -228,7 +224,7 @@ inline void IpcEventLoopBase::setup_socket()
 
   int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
   if (fd == -1) {
-    throw std::system_error(errno, std::generic_category(), "control socket() failed");
+    throw std::system_error(errno, std::generic_category(), "socket failed");
   }
   socket_fd_ = fd;
 
@@ -237,18 +233,18 @@ inline void IpcEventLoopBase::setup_socket()
   };
   addr.sun_family = AF_UNIX;
   if (socket_path_.size() >= sizeof(addr.sun_path)) {
-    throw std::runtime_error("Control socket path too long: " + socket_path_);
+    throw std::runtime_error("Socket path too long: " + socket_path_);
   }
   strncpy(addr.sun_path, socket_path_.c_str(), sizeof(addr.sun_path) - 1);
 
   unlink(socket_path_.c_str());  // remove stale file if any
 
   if (bind(socket_fd_, reinterpret_cast<struct sockaddr *>(&addr), sizeof(addr)) == -1) {
-    throw std::system_error(errno, std::generic_category(), "control socket bind failed");
+    throw std::system_error(errno, std::generic_category(), "socket bind failed");
   }
 
   if (listen(socket_fd_, 4) == -1) {
-    throw std::system_error(errno, std::generic_category(), "control socket listen failed");
+    throw std::system_error(errno, std::generic_category(), "socket listen failed");
   }
 }
 
@@ -333,7 +329,7 @@ inline void IpcEventLoopBase::cleanup_resources()
   if (!socket_path_.empty()) {
     if (unlink(socket_path_.c_str()) == -1 && errno != ENOENT) {
       RCLCPP_WARN(
-        logger_, "Failed to unlink control socket '%s': %s", socket_path_.c_str(), strerror(errno));
+        logger_, "Failed to unlink socket '%s': %s", socket_path_.c_str(), strerror(errno));
     }
   }
 
