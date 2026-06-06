@@ -5,11 +5,18 @@
 #include "agnocast/agnocast_epoll_event.hpp"
 #include "agnocast/agnocast_executor.hpp"
 
+#include <rclcpp/serialized_message.hpp>
+
+#include <rcutils/allocator.h>
+#include <rmw/rmw.h>
+#include <rmw/serialized_message.h>
+#include <rmw/types.h>
 #include <sys/epoll.h>
 #include <unistd.h>
 
 #include <array>
 #include <stdexcept>
+#include <utility>
 
 namespace agnocast
 {
@@ -25,6 +32,73 @@ uint32_t allocate_callback_info_id()
   if (callback_info_id >= MAX_CALLBACK_INFO_ID) {
     throw std::runtime_error("Callback info ID overflow: too many callbacks registered");
   }
+  return callback_info_id;
+}
+
+TypeErasedCallback get_erased_generic_callback(
+  std::function<void(std::shared_ptr<rclcpp::SerializedMessage>)> callback,
+  const rosidl_message_type_support_t * type_support)
+{
+  return [cb = std::move(callback), type_support](AnyObject && arg) {
+    if (typeid(RawMessagePtr) != arg.type()) {
+      RCLCPP_ERROR(
+        logger, "Agnocast internal implementation error: bad allocation when callback is called");
+      close(agnocast_fd);
+      exit(EXIT_FAILURE);
+    }
+
+    auto && raw_arg = static_cast<RawMessagePtr &&>(arg);
+    // Take ownership of the raw shared-memory pointer for the duration of the
+    // serialization call. Released at end of scope, after the user callback
+    // has consumed the resulting SerializedMessage (which owns its own buffer).
+    agnocast::ipc_shared_ptr<std::byte> raw_ptr = std::move(raw_arg).get();
+    if (!raw_ptr) {
+      RCLCPP_ERROR(logger, "GenericSubscription received a null raw message pointer; skipping");
+      return;
+    }
+
+    auto serialized = std::make_shared<rclcpp::SerializedMessage>();
+    const rmw_ret_t ret = rmw_serialize(
+      static_cast<const void *>(raw_ptr.get()), type_support,
+      &serialized->get_rcl_serialized_message());
+    if (ret != RMW_RET_OK) {
+      RCLCPP_ERROR(
+        logger, "rmw_serialize failed in GenericSubscription dispatch (rmw_ret=%d); skipping",
+        static_cast<int>(ret));
+      return;
+    }
+
+    cb(std::move(serialized));
+  };
+}
+
+uint32_t register_generic_callback(
+  std::function<void(std::shared_ptr<rclcpp::SerializedMessage>)> callback,
+  const rosidl_message_type_support_t * type_support, const std::string & topic_name,
+  const topic_local_id_t subscriber_id, const bool is_transient_local, mqd_t mqdes,
+  const rclcpp::CallbackGroup::SharedPtr callback_group)
+{
+  TypeErasedCallback erased_callback =
+    get_erased_generic_callback(std::move(callback), type_support);
+
+  auto message_creator = [](
+                           const void * ptr, const std::string & topic_name,
+                           const topic_local_id_t subscriber_id, const int64_t entry_id) {
+    return std::make_unique<RawMessagePtr>(agnocast::ipc_shared_ptr<std::byte>(
+      reinterpret_cast<std::byte *>(const_cast<void *>(ptr)), topic_name, subscriber_id, entry_id));
+  };
+
+  uint32_t callback_info_id = allocate_callback_info_id();
+
+  {
+    std::lock_guard<std::mutex> lock(id2_callback_info_mtx);
+    id2_callback_info[callback_info_id] =
+      CallbackInfo{topic_name,     subscriber_id,   is_transient_local, mqdes,
+                   callback_group, erased_callback, message_creator};
+  }
+
+  EpollUpdateDispatcher::get_instance().request_update_all();
+
   return callback_info_id;
 }
 

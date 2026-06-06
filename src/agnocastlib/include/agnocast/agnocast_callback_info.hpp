@@ -4,9 +4,21 @@
 #include "agnocast/agnocast_epoll_update_dispatcher.hpp"
 #include "agnocast/agnocast_smart_pointer.hpp"
 
+#include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <type_traits>
+
+// Forward declarations to avoid pulling typesupport / rmw / serialization
+// headers into every translation unit that uses callback registration.
+// The full definitions are only needed in agnocast_callback_info.cpp where
+// rmw_serialize is invoked.
+namespace rclcpp
+{
+class SerializedMessage;
+}
+struct rosidl_message_type_support_t;
 
 namespace agnocast
 {
@@ -38,6 +50,36 @@ public:
   const std::type_info & type() const override { return typeid(T); }
 
   agnocast::ipc_shared_ptr<T> && get() && { return std::move(ptr_); }
+};
+
+// Class for a type-erased message envelope used by GenericSubscription.
+// Holds the raw shared-memory address as `ipc_shared_ptr<std::byte>`. The
+// `std::byte` element type (rather than `uint8_t`) makes the "opaque memory
+// blob" intent explicit at the type level — `std::byte` is a scoped enum with
+// no arithmetic semantics, so it cannot be misread as a 1-byte integer.
+//
+// TODO(generic-subscription): migrate to `ipc_shared_ptr<std::byte[]>` once the
+// smart-pointer type gains an array specialization (see follow-up work).
+// Array semantics would more accurately reflect that the pointee is the start
+// of a serialized message of unknown length, and would also pick up `delete[]`
+// on the publisher-side reset() branch automatically. For now the publisher
+// branch is unreachable for subscriber-constructed instances, so the scalar
+// `delete` in `reset()` is harmless.
+//
+// Serialization to `rclcpp::SerializedMessage` is performed inside the
+// TypeErasedCallback built by `register_generic_callback`, not here — keeping
+// this envelope a pure raw-byte handle leaves the door open for future
+// non-serialization consumers (e.g. zero-copy bridges, custom forwarders).
+class RawMessagePtr : public AnyObject
+{
+  agnocast::ipc_shared_ptr<std::byte> ptr_;
+
+public:
+  explicit RawMessagePtr(agnocast::ipc_shared_ptr<std::byte> p) : ptr_(std::move(p)) {}
+
+  const std::type_info & type() const override { return typeid(RawMessagePtr); }
+
+  agnocast::ipc_shared_ptr<std::byte> && get() && { return std::move(ptr_); }
 };
 
 // Type for type-erased callback function
@@ -84,6 +126,17 @@ TypeErasedCallback get_erased_callback(Func && callback)
   };
 }
 
+// Build a TypeErasedCallback that, when invoked with a RawMessagePtr,
+// serializes the underlying message via `rmw_serialize` (using `type_support`)
+// into a freshly allocated `rclcpp::SerializedMessage`, then hands it to the
+// user-supplied `callback`. The captured raw pointer is kept alive across
+// rmw_serialize and released when the wrapper returns.
+// On serialization failure the entry is logged and silently dropped, matching
+// the existing `RCLCPP_ERROR` + recovery pattern used elsewhere in agnocast.
+TypeErasedCallback get_erased_generic_callback(
+  std::function<void(std::shared_ptr<rclcpp::SerializedMessage>)> callback,
+  const rosidl_message_type_support_t * type_support);
+
 template <typename MessageT, typename Func>
 uint32_t register_callback(
   Func && callback, const std::string & topic_name, const topic_local_id_t subscriber_id,
@@ -120,6 +173,18 @@ uint32_t register_callback(
 
   return callback_info_id;
 }
+
+// Non-templated counterpart of `register_callback` for GenericSubscription.
+// For each delivered entry, the supplied `callback` is invoked with a
+// `std::shared_ptr<rclcpp::SerializedMessage>` produced by `rmw_serialize`
+// against `type_support`. The caller (typically `GenericSubscription`) owns
+// the typesupport library / handle and must keep them alive for the lifetime
+// of the registered callback.
+uint32_t register_generic_callback(
+  std::function<void(std::shared_ptr<rclcpp::SerializedMessage>)> callback,
+  const rosidl_message_type_support_t * type_support, const std::string & topic_name,
+  const topic_local_id_t subscriber_id, const bool is_transient_local, mqd_t mqdes,
+  const rclcpp::CallbackGroup::SharedPtr callback_group);
 
 void receive_and_execute_message(
   uint32_t callback_info_id, pid_t my_pid, const CallbackInfo & callback_info,
