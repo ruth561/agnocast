@@ -40,6 +40,9 @@ void send_standard_service_bridge_request(
 template <typename MessageT>
 void send_performance_pubsub_bridge_request(
   const std::string & topic_name, topic_local_id_t id, BridgeDirection direction);
+inline void send_performance_pubsub_bridge_request_by_type_name(
+  const std::string & topic_name, topic_local_id_t id, const std::string & message_type,
+  BridgeDirection direction);
 template <typename ServiceT>
 void send_performance_service_bridge_request(
   const std::string & service_name, BridgeDirection direction,
@@ -54,6 +57,35 @@ void request_pubsub_bridge_core(
     send_standard_pubsub_bridge_request<MessageT>(topic_name, id, direction);
   } else if (bridge_mode == BridgeMode::Performance) {
     send_performance_pubsub_bridge_request<MessageT>(topic_name, id, direction);
+  }
+}
+
+// Non-template variant of `request_pubsub_bridge_core` that takes the message
+// type as a runtime string instead of a compile-time `MessageT`. Used by
+// `GenericSubscription`, where only the runtime topic-type string is available.
+//
+// Mode behavior:
+//   - Off:         no-op (matches the templated path).
+//   - Performance: forwards to `send_performance_pubsub_bridge_request_by_type_name`.
+//   - Standard:    not yet supported. Standard-mode bridges use function-pointer
+//                  factories (`&start_r2a_pubsub_node<MessageT>`) whose instantiation
+//                  requires a compile-time `MessageT`, so a runtime-typed equivalent
+//                  needs a generic, type-erased bridge node (out of scope here).
+//                  We log a warning and skip the request.
+inline void request_pubsub_bridge_core_by_type_name(
+  const std::string & topic_name, topic_local_id_t id, const std::string & message_type,
+  BridgeDirection direction)
+{
+  auto bridge_mode = get_bridge_mode();
+  if (bridge_mode == BridgeMode::Standard) {
+    static const auto logger = rclcpp::get_logger("agnocast_bridge_requester");
+    RCLCPP_WARN(
+      logger,
+      "GenericSubscription does not yet support standard-mode bridge for topic '%s'. "
+      "Set AGNOCAST_BRIDGE_MODE=performance to enable bridging.",
+      topic_name.c_str());
+  } else if (bridge_mode == BridgeMode::Performance) {
+    send_performance_pubsub_bridge_request_by_type_name(topic_name, id, message_type, direction);
   }
 }
 
@@ -403,14 +435,23 @@ template <typename MessageT>
 void send_performance_pubsub_bridge_request(
   const std::string & topic_name, topic_local_id_t id, BridgeDirection direction)
 {
-  static const auto logger = rclcpp::get_logger("agnocast_performance_bridge_requester");
-
   const std::string message_type_name = rosidl_generator_traits::name<MessageT>();
+  send_performance_pubsub_bridge_request_by_type_name(topic_name, id, message_type_name, direction);
+}
+
+// Non-template variant of `send_performance_pubsub_bridge_request<MessageT>`
+// that takes the message type as a runtime string. Used by `GenericSubscription`,
+// which does not have a compile-time `MessageT` to derive the type name from.
+inline void send_performance_pubsub_bridge_request_by_type_name(
+  const std::string & topic_name, topic_local_id_t id, const std::string & message_type,
+  BridgeDirection direction)
+{
+  static const auto logger = rclcpp::get_logger("agnocast_performance_bridge_requester");
 
   auto [msg, reason] = BridgeRequestMsgBuilder(BridgeRequestMsgBuilder::Mode::Performance, logger)
                          .set_direction(direction)
                          .set_is_service(false)
-                         .set_message_type(message_type_name.c_str())
+                         .set_message_type(message_type.c_str())
                          .set_topic_name(topic_name.c_str())
                          .set_pubsub_target_id(id)
                          .build_performance_message();

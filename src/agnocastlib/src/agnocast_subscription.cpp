@@ -129,7 +129,8 @@ rclcpp::CallbackGroup::SharedPtr get_default_callback_group_for_tracepoint(agnoc
 rclcpp::QoS GenericSubscription::constructor_impl(
   rclcpp::Node * node, const std::string & topic_type, const rclcpp::QoS & qos,
   std::function<void(std::shared_ptr<rclcpp::SerializedMessage>)> callback,
-  rclcpp::CallbackGroup::SharedPtr callback_group, const agnocast::SubscriptionOptions & options)
+  rclcpp::CallbackGroup::SharedPtr callback_group, const agnocast::SubscriptionOptions & options,
+  bool is_bridge)
 {
   const bool override_qos = options.qos_overriding_options.get_policy_kinds().size() > 0;
   rclcpp::node_interfaces::NodeParametersInterface::SharedPtr node_parameters =
@@ -156,14 +157,30 @@ rclcpp::QoS GenericSubscription::constructor_impl(
   type_support_handle_ =
     rclcpp::get_message_typesupport_handle(topic_type, "rosidl_typesupport_cpp", *ts_lib_);
 
-  union ioctl_add_subscriber_args add_subscriber_args =
-    initialize(actual_qos, false, options.ignore_local_publications, false, node_name, topic_type);
+  union ioctl_add_subscriber_args add_subscriber_args = initialize(
+    actual_qos, false, options.ignore_local_publications, is_bridge, node_name, topic_type);
 
   id_ = add_subscriber_args.ret_id;
-  // No bridge request — GenericSubscription intentionally does not auto-request
-  // an R2A bridge. If a bridge is already active (created by a typed publisher
-  // on the same topic), messages will still arrive because Agnocast delivery is
-  // type-agnostic.
+
+  // Request an R2A bridge for this generic subscription. Skipped when this
+  // subscription is itself the agnocast-side endpoint of a bridge node
+  // (`is_bridge=true`); otherwise it would request a bridge against itself,
+  // causing a self-loop or duplicate bridge.
+  //
+  // The non-template entry point is required because we only have a runtime
+  // `topic_type` string here, not a compile-time `MessageT`. Behavior by mode:
+  //   - Off:         no-op.
+  //   - Performance: enqueues an MqMsgPerformanceBridge carrying the runtime
+  //                  message type. The performance bridge manager will load
+  //                  the corresponding `agnocast_bridge_plugins` factory.
+  //   - Standard:    not yet supported (warn-and-skip). See the comment on
+  //                  `request_pubsub_bridge_core_by_type_name` for the
+  //                  rationale (function-pointer factories require
+  //                  compile-time `MessageT`).
+  if (!is_bridge) {
+    request_pubsub_bridge_core_by_type_name(
+      topic_name_, id_, topic_type, BridgeDirection::ROS2_TO_AGNOCAST);
+  }
 
   mqd_t mq = open_mq_for_subscription(topic_name_, id_, mq_subscription_);
 
@@ -179,7 +196,7 @@ rclcpp::QoS GenericSubscription::constructor_impl(
 GenericSubscription::GenericSubscription(
   rclcpp::Node * node, const std::string & topic_name, const std::string & topic_type,
   const rclcpp::QoS & qos, std::function<void(std::shared_ptr<rclcpp::SerializedMessage>)> callback,
-  agnocast::SubscriptionOptions options)
+  agnocast::SubscriptionOptions options, bool is_bridge)
 : SubscriptionBase(node, topic_name)
 {
   rclcpp::CallbackGroup::SharedPtr callback_group = get_valid_callback_group(node, options);
@@ -187,8 +204,8 @@ GenericSubscription::GenericSubscription(
   const void * callback_addr = static_cast<const void *>(&callback);
   const char * callback_symbol = tracetools::get_symbol(callback);
 
-  const rclcpp::QoS actual_qos =
-    constructor_impl(node, topic_type, qos, std::move(callback), callback_group, options);
+  const rclcpp::QoS actual_qos = constructor_impl(
+    node, topic_type, qos, std::move(callback), callback_group, options, is_bridge);
 
   {
     uint64_t pid_callback_info_id = (static_cast<uint64_t>(getpid()) << 32) | callback_info_id_;

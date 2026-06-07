@@ -179,6 +179,33 @@ You can specify custom plugin search paths using the `AGNOCAST_BRIDGE_PLUGINS_PA
 export AGNOCAST_BRIDGE_PLUGINS_PATH=/path/to/plugins:/another/path
 ```
 
+## Generic Subscriptions
+
+`agnocast::GenericSubscription` (constructed with a runtime `topic_type` string,
+mirroring `rclcpp::GenericSubscription`) participates in the R2A bridge with the
+following caveats. Because the message type is only known at runtime, the
+bridge request cannot reuse the templated `&start_r2a_pubsub_node<MessageT>`
+factory used by typed subscriptions.
+
+| Mode | R2A bridge behavior for `GenericSubscription` |
+| :--- | :--- |
+| Off | No bridge is requested (same as typed subscriptions). |
+| Performance | An R2A bridge is requested using the runtime `topic_type` string. **Requires** a pre-generated `agnocast_bridge_plugins` library for that message type (see [Performance Mode Setup](#performance-mode-setup)). |
+| Standard | **Not yet supported.** A warning is logged and the bridge request is skipped; messages from ROS-only publishers will not be forwarded. To bridge to a `GenericSubscription`, switch to Performance mode (`AGNOCAST_BRIDGE_MODE=performance`). |
+
+In all modes, if an R2A bridge is already active on the same topic — for
+example, because a typed `agnocast::Subscription<MessageT>` was created
+elsewhere in the process — messages will still arrive normally, because
+Agnocast-side delivery is type-agnostic.
+
+> [!NOTE]
+> Standard-mode support for `GenericSubscription` requires a generic,
+> type-erased bridge node (a non-template `start_r2a_pubsub_node_generic`
+> backed by `rclcpp::create_generic_subscription` plus a future
+> `agnocast::GenericPublisher`). This is tracked as a follow-up; until then,
+> Performance mode is the supported path for bridging to generic
+> subscriptions.
+
 ## Bridge Activation Conditions
 
 Bridges are not always active. The activation conditions differ between Standard mode and Performance mode.

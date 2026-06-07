@@ -437,9 +437,29 @@ struct RosToAgnocastPubsubRequestPolicy;
 /// template argument. The typesupport library is loaded eagerly in the
 /// constructor and held for the subscription's lifetime.
 ///
-/// **No bridge request is made.** If a ROS-to-Agnocast bridge is active (e.g.
-/// because a typed publisher on the same topic created one), messages will still
-/// arrive normally because Agnocast-side delivery is type-agnostic.
+/// **R2A bridge behavior** (forwards messages from a ROS 2 publisher on the
+/// same topic into Agnocast):
+/// - `BridgeMode::Performance`: an R2A bridge is requested using the runtime
+///   `topic_type` string. This requires a corresponding
+///   `agnocast_bridge_plugins` shared library to have been generated for that
+///   message type (see docs/agnocast_ros2_bridge.md).
+/// - `BridgeMode::Standard`: bridging is **not yet supported** for
+///   `GenericSubscription`. A warning is logged and the bridge request is
+///   skipped; messages from ROS-only publishers will not be forwarded. (The
+///   standard-mode bridge factory uses function pointers parameterized on
+///   `MessageT`, which we cannot instantiate from a runtime type string.)
+/// - `BridgeMode::Off`: no bridge request is made.
+///
+/// In all modes, if an R2A bridge is already active on the topic (e.g. created
+/// by a typed `agnocast::Subscription<MessageT>` on the same topic), messages
+/// will still arrive normally because Agnocast-side delivery is type-agnostic.
+///
+/// The `is_bridge` constructor parameter must be set to `true` only when this
+/// subscription is itself the receiving end of a bridge node (i.e. a
+/// hypothetical generic A2R bridge). In that case the constructor announces
+/// itself as a bridge endpoint to the kernel module and **does not** issue an
+/// R2A bridge request, preventing self-loops. End users should leave it at
+/// the default (`false`).
 AGNOCAST_PUBLIC
 class GenericSubscription : public SubscriptionBase
 {
@@ -453,7 +473,8 @@ class GenericSubscription : public SubscriptionBase
   rclcpp::QoS constructor_impl(
     rclcpp::Node * node, const std::string & topic_type, const rclcpp::QoS & qos,
     std::function<void(std::shared_ptr<rclcpp::SerializedMessage>)> callback,
-    rclcpp::CallbackGroup::SharedPtr callback_group, const agnocast::SubscriptionOptions & options);
+    rclcpp::CallbackGroup::SharedPtr callback_group, const agnocast::SubscriptionOptions & options,
+    bool is_bridge);
 
 public:
   using SharedPtr = std::shared_ptr<GenericSubscription>;
@@ -463,7 +484,8 @@ public:
     rclcpp::Node * node, const std::string & topic_name, const std::string & topic_type,
     const rclcpp::QoS & qos,
     std::function<void(std::shared_ptr<rclcpp::SerializedMessage>)> callback,
-    agnocast::SubscriptionOptions options = agnocast::SubscriptionOptions());
+    agnocast::SubscriptionOptions options = agnocast::SubscriptionOptions(),
+    bool is_bridge = false);
 
   // Destructor defined in .cpp so that ~shared_ptr<rcpputils::SharedLibrary>
   // sees the complete SharedLibrary type (forward-declared in this header).
