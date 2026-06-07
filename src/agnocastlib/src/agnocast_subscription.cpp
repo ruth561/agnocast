@@ -1,6 +1,8 @@
 #include "agnocast/agnocast.hpp"
 #include "agnocast/internal/type_registry_writer.hpp"
 #include "agnocast/node/agnocast_node.hpp"
+#include "rclcpp/typesupport_helpers.hpp"
+#include "rcpputils/shared_library.hpp"
 
 namespace agnocast
 {
@@ -118,6 +120,94 @@ void remove_mq(const std::pair<mqd_t, std::string> & mq_subscription)
 rclcpp::CallbackGroup::SharedPtr get_default_callback_group_for_tracepoint(agnocast::Node * node)
 {
   return node->get_node_base_interface()->get_default_callback_group();
+}
+
+// ---------------------------------------------------------------------------
+// GenericSubscription
+// ---------------------------------------------------------------------------
+
+rclcpp::QoS GenericSubscription::constructor_impl(
+  rclcpp::Node * node, const std::string & topic_type, const rclcpp::QoS & qos,
+  std::function<void(std::shared_ptr<rclcpp::SerializedMessage>)> callback,
+  rclcpp::CallbackGroup::SharedPtr callback_group, const agnocast::SubscriptionOptions & options)
+{
+  const bool override_qos = options.qos_overriding_options.get_policy_kinds().size() > 0;
+  rclcpp::node_interfaces::NodeParametersInterface::SharedPtr node_parameters =
+    override_qos ? node->get_node_parameters_interface() : nullptr;
+  const rclcpp::QoS actual_qos = override_qos
+                                   ? rclcpp::detail::declare_qos_parameters(
+                                       options.qos_overriding_options, node_parameters, topic_name_,
+                                       qos, rclcpp::detail::SubscriptionQosParametersTraits{})
+                                   : qos;
+
+  validate_subscription_qos(actual_qos);
+
+  const std::string node_name = node->get_fully_qualified_name();
+
+  // Load the typesupport library BEFORE calling initialize() (which registers
+  // the subscriber with the kernel via ioctl). Both get_typesupport_library and
+  // get_message_typesupport_handle throw std::runtime_error for unknown types.
+  // By loading eagerly here, any such exception escapes the constructor before
+  // any kernel-side or MQ state has been created, keeping the system clean.
+  // If we deferred loading until after initialize(), a throw would leave a
+  // half-registered subscriber in the kernel with no corresponding userspace
+  // callback or message queue.
+  ts_lib_ = rclcpp::get_typesupport_library(topic_type, "rosidl_typesupport_cpp");
+  type_support_handle_ =
+    rclcpp::get_message_typesupport_handle(topic_type, "rosidl_typesupport_cpp", *ts_lib_);
+
+  union ioctl_add_subscriber_args add_subscriber_args =
+    initialize(actual_qos, false, options.ignore_local_publications, false, node_name, topic_type);
+
+  id_ = add_subscriber_args.ret_id;
+  // No bridge request — GenericSubscription intentionally does not auto-request
+  // an R2A bridge. If a bridge is already active (created by a typed publisher
+  // on the same topic), messages will still arrive because Agnocast delivery is
+  // type-agnostic.
+
+  mqd_t mq = open_mq_for_subscription(topic_name_, id_, mq_subscription_);
+
+  const bool is_transient_local =
+    actual_qos.durability() == rclcpp::DurabilityPolicy::TransientLocal;
+  callback_info_id_ = agnocast::register_generic_callback(
+    std::move(callback), type_support_handle_, topic_name_, id_, is_transient_local, mq,
+    callback_group);
+
+  return actual_qos;
+}
+
+GenericSubscription::GenericSubscription(
+  rclcpp::Node * node, const std::string & topic_name, const std::string & topic_type,
+  const rclcpp::QoS & qos, std::function<void(std::shared_ptr<rclcpp::SerializedMessage>)> callback,
+  agnocast::SubscriptionOptions options)
+: SubscriptionBase(node, topic_name)
+{
+  rclcpp::CallbackGroup::SharedPtr callback_group = get_valid_callback_group(node, options);
+
+  const void * callback_addr = static_cast<const void *>(&callback);
+  const char * callback_symbol = tracetools::get_symbol(callback);
+
+  const rclcpp::QoS actual_qos =
+    constructor_impl(node, topic_type, qos, std::move(callback), callback_group, options);
+
+  {
+    uint64_t pid_callback_info_id = (static_cast<uint64_t>(getpid()) << 32) | callback_info_id_;
+    TRACEPOINT(
+      agnocast_subscription_init, static_cast<const void *>(this),
+      static_cast<const void *>(
+        node->get_node_base_interface()->get_shared_rcl_node_handle().get()),
+      callback_addr, static_cast<const void *>(callback_group.get()), callback_symbol,
+      topic_name_.c_str(), actual_qos.depth(), pid_callback_info_id);
+  }
+}
+
+GenericSubscription::~GenericSubscription()
+{
+  {
+    std::lock_guard<std::mutex> lock(id2_callback_info_mtx);
+    id2_callback_info.erase(callback_info_id_);
+  }
+  remove_mq(mq_subscription_);
 }
 
 }  // namespace agnocast

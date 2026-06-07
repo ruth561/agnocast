@@ -22,9 +22,17 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
+
+// Forward declaration — complete type only needed in agnocast_subscription.cpp
+// where get_typesupport_library is called.
+namespace rcpputils
+{
+class SharedLibrary;
+}
 
 namespace agnocast
 {
@@ -420,6 +428,47 @@ public:
 };
 
 struct RosToAgnocastPubsubRequestPolicy;
+
+/// @brief Event-driven generic (type-erased) subscription that consumes Agnocast
+/// shared-memory messages and delivers them as `rclcpp::SerializedMessage`.
+///
+/// Mirrors `rclcpp::GenericSubscription` semantics: the topic type is supplied
+/// as a runtime string (e.g. "std_msgs/msg/String") rather than a compile-time
+/// template argument. The typesupport library is loaded eagerly in the
+/// constructor and held for the subscription's lifetime.
+///
+/// **No bridge request is made.** If a ROS-to-Agnocast bridge is active (e.g.
+/// because a typed publisher on the same topic created one), messages will still
+/// arrive normally because Agnocast-side delivery is type-agnostic.
+AGNOCAST_PUBLIC
+class GenericSubscription : public SubscriptionBase
+{
+  std::pair<mqd_t, std::string> mq_subscription_;
+  uint32_t callback_info_id_{0};
+  /// Keeps the dynamically loaded typesupport .so alive for our lifetime.
+  std::shared_ptr<rcpputils::SharedLibrary> ts_lib_;
+  /// Points into ts_lib_ — valid as long as ts_lib_ is alive.
+  const rosidl_message_type_support_t * type_support_handle_{nullptr};
+
+  rclcpp::QoS constructor_impl(
+    rclcpp::Node * node, const std::string & topic_type, const rclcpp::QoS & qos,
+    std::function<void(std::shared_ptr<rclcpp::SerializedMessage>)> callback,
+    rclcpp::CallbackGroup::SharedPtr callback_group, const agnocast::SubscriptionOptions & options);
+
+public:
+  using SharedPtr = std::shared_ptr<GenericSubscription>;
+
+  AGNOCAST_PUBLIC
+  GenericSubscription(
+    rclcpp::Node * node, const std::string & topic_name, const std::string & topic_type,
+    const rclcpp::QoS & qos,
+    std::function<void(std::shared_ptr<rclcpp::SerializedMessage>)> callback,
+    agnocast::SubscriptionOptions options = agnocast::SubscriptionOptions());
+
+  // Destructor defined in .cpp so that ~shared_ptr<rcpputils::SharedLibrary>
+  // sees the complete SharedLibrary type (forward-declared in this header).
+  ~GenericSubscription();
+};
 
 /// @brief The user-facing event-driven subscription type.
 /// Alias for `BasicSubscription<MessageT>`. Use this type (not BasicSubscription directly) when
