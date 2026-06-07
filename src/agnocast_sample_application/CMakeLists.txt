@@ -13,10 +13,23 @@ find_package(rclcpp_components REQUIRED)
 find_package(agnocastlib REQUIRED)
 find_package(agnocast_sample_interfaces REQUIRED)
 find_package(agnocast_components REQUIRED)
+find_package(std_msgs REQUIRED)
 
 add_executable(talker src/minimal_publisher.cpp)
 ament_target_dependencies(talker rclcpp agnocastlib agnocast_sample_interfaces)
 target_include_directories(talker PRIVATE
+  ${agnocastlib_INCLUDE_DIRS}
+)
+
+add_executable(string_talker src/string_publisher.cpp)
+ament_target_dependencies(string_talker rclcpp agnocastlib std_msgs)
+target_include_directories(string_talker PRIVATE
+  ${agnocastlib_INCLUDE_DIRS}
+)
+
+add_executable(string_generic_listener src/string_generic_subscriber.cpp)
+ament_target_dependencies(string_generic_listener rclcpp agnocastlib std_msgs)
+target_include_directories(string_generic_listener PRIVATE
   ${agnocastlib_INCLUDE_DIRS}
 )
 
@@ -163,6 +176,12 @@ install(TARGETS no_rclcpp_client
   DESTINATION lib/${PROJECT_NAME})
 
 install(TARGETS sim_time_timer
+  DESTINATION lib/${PROJECT_NAME})
+
+install(TARGETS string_talker
+  DESTINATION lib/${PROJECT_NAME})
+
+install(TARGETS string_generic_listener
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY launch
