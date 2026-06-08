@@ -33,6 +33,18 @@ target_include_directories(string_generic_listener PRIVATE
   ${agnocastlib_INCLUDE_DIRS}
 )
 
+add_executable(string_generic_talker src/string_generic_publisher.cpp)
+ament_target_dependencies(string_generic_talker rclcpp agnocastlib std_msgs)
+target_include_directories(string_generic_talker PRIVATE
+  ${agnocastlib_INCLUDE_DIRS}
+)
+
+add_executable(string_listener src/string_subscriber.cpp)
+ament_target_dependencies(string_listener rclcpp agnocastlib std_msgs)
+target_include_directories(string_listener PRIVATE
+  ${agnocastlib_INCLUDE_DIRS}
+)
+
 add_executable(cie_tutorial_node src/cie_tutorial_node.cpp)
 ament_target_dependencies(cie_tutorial_node rclcpp agnocastlib)
 
@@ -182,6 +194,12 @@ install(TARGETS string_talker
   DESTINATION lib/${PROJECT_NAME})
 
 install(TARGETS string_generic_listener
+  DESTINATION lib/${PROJECT_NAME})
+
+install(TARGETS string_generic_talker
+  DESTINATION lib/${PROJECT_NAME})
+
+install(TARGETS string_listener
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY launch
