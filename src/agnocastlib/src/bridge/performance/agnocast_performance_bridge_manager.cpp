@@ -417,6 +417,12 @@ void PerformanceBridgeManager::create_service_bridge_if_needed(
     if (result.entity_handle) {
       active_r2a_service_bridges_.emplace(
         service_name, R2AServiceBridgeItem(std::move(result), std::move(shadow_node)));
+    } else {
+      RCLCPP_ERROR(
+        logger_,
+        "Failed to create R2A service bridge for '%s'. Service bridges require "
+        "agnocast_bridge_plugins.",
+        service_name.c_str());
     }
   } catch (const std::exception & e) {
     RCLCPP_WARN(
