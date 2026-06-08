@@ -470,8 +470,9 @@ class GenericSubscription : public SubscriptionBase
   /// Points into ts_lib_ — valid as long as ts_lib_ is alive.
   const rosidl_message_type_support_t * type_support_handle_{nullptr};
 
+  template <typename NodeT>
   rclcpp::QoS constructor_impl(
-    rclcpp::Node * node, const std::string & topic_type, const rclcpp::QoS & qos,
+    NodeT * node, const std::string & topic_type, const rclcpp::QoS & qos,
     std::function<void(std::shared_ptr<rclcpp::SerializedMessage>)> callback,
     rclcpp::CallbackGroup::SharedPtr callback_group, const agnocast::SubscriptionOptions & options,
     bool is_bridge);
@@ -486,6 +487,13 @@ public:
     std::function<void(std::shared_ptr<rclcpp::SerializedMessage>)> callback,
     agnocast::SubscriptionOptions options = agnocast::SubscriptionOptions(),
     bool is_bridge = false);
+
+  AGNOCAST_PUBLIC
+  GenericSubscription(
+    agnocast::Node * node, const std::string & topic_name, const std::string & topic_type,
+    const rclcpp::QoS & qos,
+    std::function<void(std::shared_ptr<rclcpp::SerializedMessage>)> callback,
+    agnocast::SubscriptionOptions options = agnocast::SubscriptionOptions());
 
   // Destructor defined in .cpp so that ~shared_ptr<rcpputils::SharedLibrary>
   // sees the complete SharedLibrary type (forward-declared in this header).

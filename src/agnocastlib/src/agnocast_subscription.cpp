@@ -126,8 +126,9 @@ rclcpp::CallbackGroup::SharedPtr get_default_callback_group_for_tracepoint(agnoc
 // GenericSubscription
 // ---------------------------------------------------------------------------
 
+template <typename NodeT>
 rclcpp::QoS GenericSubscription::constructor_impl(
-  rclcpp::Node * node, const std::string & topic_type, const rclcpp::QoS & qos,
+  NodeT * node, const std::string & topic_type, const rclcpp::QoS & qos,
   std::function<void(std::shared_ptr<rclcpp::SerializedMessage>)> callback,
   rclcpp::CallbackGroup::SharedPtr callback_group, const agnocast::SubscriptionOptions & options,
   bool is_bridge)
@@ -215,6 +216,30 @@ GenericSubscription::GenericSubscription(
         node->get_node_base_interface()->get_shared_rcl_node_handle().get()),
       callback_addr, static_cast<const void *>(callback_group.get()), callback_symbol,
       topic_name_.c_str(), actual_qos.depth(), pid_callback_info_id);
+  }
+}
+
+GenericSubscription::GenericSubscription(
+  agnocast::Node * node, const std::string & topic_name, const std::string & topic_type,
+  const rclcpp::QoS & qos, std::function<void(std::shared_ptr<rclcpp::SerializedMessage>)> callback,
+  agnocast::SubscriptionOptions options)
+: SubscriptionBase(node, topic_name)
+{
+  rclcpp::CallbackGroup::SharedPtr callback_group = get_valid_callback_group(node, options);
+
+  const void * callback_addr = static_cast<const void *>(&callback);
+  const char * callback_symbol = tracetools::get_symbol(callback);
+
+  const rclcpp::QoS actual_qos =
+    constructor_impl(node, topic_type, qos, std::move(callback), callback_group, options, false);
+
+  {
+    uint64_t pid_callback_info_id = (static_cast<uint64_t>(getpid()) << 32) | callback_info_id_;
+    TRACEPOINT(
+      agnocast_subscription_init, static_cast<const void *>(this),
+      static_cast<const void *>(get_node_base_address(node)), callback_addr,
+      static_cast<const void *>(callback_group.get()), callback_symbol, topic_name_.c_str(),
+      actual_qos.depth(), pid_callback_info_id);
   }
 }
 
