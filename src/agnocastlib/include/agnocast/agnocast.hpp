@@ -248,6 +248,55 @@ GenericSubscription::SharedPtr create_generic_subscription(
     std::move(callback), options);
 }
 
+/// @brief Create an Agnocast generic (type-erased) publisher (Stage 1 free function, QoS
+/// overload).
+///
+/// Mirrors `rclcpp::create_generic_publisher` argument order. The topic type is supplied as a
+/// runtime string (e.g. `"std_msgs/msg/String"`). The caller passes an
+/// `rclcpp::SerializedMessage`; GenericPublisher internally deserializes it into Agnocast shared
+/// memory via `rmw_deserialize` and publishes via zero-copy IPC.
+///
+/// @tparam NodeT Node type (rclcpp::Node or agnocast::Node).
+/// @param node Pointer to the node.
+/// @param topic_name Topic name.
+/// @param topic_type ROS message type string (e.g. `"std_msgs/msg/String"`).
+/// @param qos Quality of service profile.
+/// @param options Publisher options.
+/// @return Shared pointer to the created generic publisher.
+AGNOCAST_PUBLIC
+template <typename NodeT>
+GenericPublisher::SharedPtr create_generic_publisher(
+  NodeT * node, const std::string & topic_name, const std::string & topic_type,
+  const rclcpp::QoS & qos, agnocast::PublisherOptions options = agnocast::PublisherOptions{})
+{
+  static_assert(
+    std::is_base_of_v<rclcpp::Node, NodeT> || std::is_base_of_v<agnocast::Node, NodeT>,
+    "NodeT must be rclcpp::Node or agnocast::Node (or derived from them)");
+  return std::make_shared<GenericPublisher>(node, topic_name, topic_type, qos, options);
+}
+
+/// @brief Create an Agnocast generic (type-erased) publisher (Stage 1 free function,
+/// history-depth overload).
+/// @tparam NodeT Node type (rclcpp::Node or agnocast::Node).
+/// @param node Pointer to the node.
+/// @param topic_name Topic name.
+/// @param topic_type ROS message type string (e.g. `"std_msgs/msg/String"`).
+/// @param qos_history_depth History depth for the QoS profile.
+/// @param options Publisher options.
+/// @return Shared pointer to the created generic publisher.
+AGNOCAST_PUBLIC
+template <typename NodeT>
+GenericPublisher::SharedPtr create_generic_publisher(
+  NodeT * node, const std::string & topic_name, const std::string & topic_type,
+  const size_t qos_history_depth, agnocast::PublisherOptions options = agnocast::PublisherOptions{})
+{
+  static_assert(
+    std::is_base_of_v<rclcpp::Node, NodeT> || std::is_base_of_v<agnocast::Node, NodeT>,
+    "NodeT must be rclcpp::Node or agnocast::Node (or derived from them)");
+  return std::make_shared<GenericPublisher>(
+    node, topic_name, topic_type, rclcpp::QoS(rclcpp::KeepLast(qos_history_depth)), options);
+}
+
 /// @brief Create an Agnocast service client (Stage 1 free function).
 /// @tparam ServiceT ROS service type.
 /// @tparam NodeT Node type (rclcpp::Node or agnocast::Node).

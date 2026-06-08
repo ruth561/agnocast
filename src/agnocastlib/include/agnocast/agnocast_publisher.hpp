@@ -8,6 +8,8 @@
 #include "agnocast/agnocast_utils.hpp"
 #include "rclcpp/detail/qos_parameters.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "rclcpp/serialized_message.hpp"
+#include "rosidl_typesupport_introspection_cpp/message_introspection.hpp"
 
 #include <fcntl.h>
 #include <mqueue.h>
@@ -280,5 +282,99 @@ struct AgnocastToRosPubsubRequestPolicy;
 AGNOCAST_PUBLIC
 template <typename MessageT>
 using Publisher = agnocast::BasicPublisher<MessageT, agnocast::AgnocastToRosPubsubRequestPolicy>;
+
+/// @brief Event-driven generic (type-erased) publisher that accepts an
+/// `rclcpp::SerializedMessage`, deserializes it into Agnocast shared memory,
+/// and publishes via zero-copy IPC.
+///
+/// Mirrors `rclcpp::GenericPublisher` semantics: the topic type is supplied as
+/// a runtime string (e.g. `"std_msgs/msg/String"`) rather than a compile-time
+/// template argument. Two typesupport libraries are loaded eagerly in the
+/// constructor and held for the publisher's lifetime:
+///   - `rosidl_typesupport_cpp`               — used by `rmw_deserialize`
+///   - `rosidl_typesupport_introspection_cpp`  — provides `size_of_`,
+///     `init_function`, and `fini_function` for type-erased allocation
+///
+/// **A2R bridge behavior** (forwards messages from Agnocast to a ROS 2
+/// subscriber on the same topic):
+/// - `BridgeMode::Performance`: an A2R bridge is requested using the runtime
+///   `topic_type` string.
+/// - `BridgeMode::Standard`: not yet supported. A warning is logged and the
+///   bridge request is skipped.
+/// - `BridgeMode::Off`: no bridge request is made.
+///
+/// The `is_bridge` constructor parameter must be set to `true` only when this
+/// publisher is the sending end of a bridge node (i.e. a generic A2R bridge).
+/// End users should leave it at the default (`false`).
+AGNOCAST_PUBLIC
+class GenericPublisher
+{
+  topic_local_id_t id_{-1};
+  std::string topic_name_;
+  std::unordered_map<topic_local_id_t, std::tuple<mqd_t, bool>> opened_mqs_;
+  std::mutex opened_mqs_mtx_;
+  rmw_gid_t gid_;
+
+  /// Keeps the `rosidl_typesupport_cpp` .so alive — used by `rmw_deserialize`.
+  std::shared_ptr<rcpputils::SharedLibrary> ts_lib_;
+  /// Points into ts_lib_ — valid as long as ts_lib_ is alive.
+  const rosidl_message_type_support_t * type_support_handle_{nullptr};
+
+  /// Keeps the `rosidl_typesupport_introspection_cpp` .so alive.
+  std::shared_ptr<rcpputils::SharedLibrary> ts_lib_introspection_;
+  /// Points into ts_lib_introspection_ — provides size_of_ / init_function / fini_function.
+  const rosidl_typesupport_introspection_cpp::MessageMembers * members_{nullptr};
+
+  void generate_gid();
+
+  template <typename NodeT>
+  rclcpp::QoS constructor_impl(
+    NodeT * node, const std::string & topic_type, const rclcpp::QoS & qos,
+    const agnocast::PublisherOptions & options, bool is_bridge);
+
+public:
+  using SharedPtr = std::shared_ptr<GenericPublisher>;
+
+  AGNOCAST_PUBLIC
+  GenericPublisher(
+    rclcpp::Node * node, const std::string & topic_name, const std::string & topic_type,
+    const rclcpp::QoS & qos, agnocast::PublisherOptions options = agnocast::PublisherOptions{},
+    bool is_bridge = false);
+
+  AGNOCAST_PUBLIC
+  GenericPublisher(
+    agnocast::Node * node, const std::string & topic_name, const std::string & topic_type,
+    const rclcpp::QoS & qos, agnocast::PublisherOptions options = agnocast::PublisherOptions{});
+
+  ~GenericPublisher();
+
+  /// @brief Publish a serialized message. The message is deserialized into
+  /// Agnocast shared memory and forwarded to all subscribers.
+  AGNOCAST_PUBLIC
+  void publish(const rclcpp::SerializedMessage & serialized_msg);
+
+  /// @brief Convenience overload — delegates to `publish(*serialized_msg)`.
+  AGNOCAST_PUBLIC
+  void publish(std::shared_ptr<rclcpp::SerializedMessage> serialized_msg);
+
+  /// @brief Return the fully-resolved topic name.
+  AGNOCAST_PUBLIC
+  const char * get_topic_name() const { return topic_name_.c_str(); }
+
+  /// @brief Return the total subscriber count for this topic (Agnocast + ROS 2 via bridge).
+  AGNOCAST_PUBLIC
+  uint32_t get_subscription_count() const { return get_subscription_count_core(topic_name_); }
+
+  /// @brief Return the number of Agnocast intra-process subscribers only.
+  AGNOCAST_PUBLIC
+  uint32_t get_intra_subscription_count() const
+  {
+    return get_intra_subscription_count_core(topic_name_);
+  }
+
+  /// @brief Return the GID of this publisher, unique across both Agnocast and ROS 2.
+  AGNOCAST_PUBLIC
+  const rmw_gid_t & get_gid() const { return gid_; }
+};
 
 }  // namespace agnocast
