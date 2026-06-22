@@ -70,6 +70,25 @@ static void remove_all_bridge_info(void)
   }
 }
 
+static void remove_all_bridge_msg_queues(void)
+{
+  struct bridge_msg_queue * q;
+  int bkt;
+  struct hlist_node * tmp;
+  hash_for_each_safe(bridge_msg_queue_htable, bkt, tmp, q, hnode)
+  {
+    struct bridge_msg_entry * entry;
+    struct bridge_msg_entry * tmp_entry;
+    list_for_each_entry_safe(entry, tmp_entry, &q->entries, node)
+    {
+      list_del(&entry->node);
+      kfree(entry);
+    }
+    hash_del(&q->hnode);
+    kfree(q);
+  }
+}
+
 // Called during module unload. Not an ioctl function, so we manage locks here directly.
 void agnocast_exit_free_data(void)
 {
@@ -77,6 +96,7 @@ void agnocast_exit_free_data(void)
   remove_all_topics();
   remove_all_process_info();
   remove_all_bridge_info();
+  remove_all_bridge_msg_queues();
   up_write(&global_htables_rwsem);
 }
 

@@ -263,6 +263,21 @@ if(BUILD_TESTING)
     LABELS "requires_kernel_module;requires_heaphook"
   )
 
+  # Bridge message queue integration test (requires kernel module, no heaphook).
+  # Drives the new SEND_MSG_TO_BRIDGE / CREATE_BRIDGE_MSG_RECEIVER ioctls directly
+  # against /dev/agnocast and uses fork() to verify per-IPC-namespace lifetime
+  # management (queue is freed when the last Agnocast process exits, survives
+  # while at least one is alive).
+  ament_add_gmock(test_integration_bridge_msg_queue_${PROJECT_NAME}
+    test/integration/test_agnocast_bridge_msg_queue.cpp)
+  target_include_directories(test_integration_bridge_msg_queue_${PROJECT_NAME} PRIVATE include)
+  target_link_libraries(test_integration_bridge_msg_queue_${PROJECT_NAME} agnocast)
+  set_tests_properties(test_integration_bridge_msg_queue_${PROJECT_NAME} PROPERTIES
+    ENVIRONMENT "GTEST_DEATH_TEST_STYLE=threadsafe"
+    TIMEOUT 60
+    LABELS "requires_kernel_module"
+  )
+
   # diagnostic_updater integration test (requires kernel module, no mock).
   # Black-box test of agnocast::Updater observed via a real agnocast::Subscription
   # on /diagnostics.

@@ -159,6 +159,57 @@ struct bridge_info
 
 extern DECLARE_HASHTABLE(bridge_htable, TOPIC_HASH_BITS);
 
+// ---------- bridge_msg_queue (kmod-resident replacement for the Bridge MQ) ----------
+//
+// Per-IPC-namespace FIFO of opaque variable-length messages destined for the (performance)
+// Bridge Manager process in that namespace. Producers (any Agnocast entity) push via
+// AGNOCAST_SEND_MSG_TO_BRIDGE_CMD; the Bridge Manager creates an anonymous receiver fd via
+// AGNOCAST_CREATE_BRIDGE_MSG_RECEIVER_CMD and reads messages with read(2) (datagram
+// semantics: 1 read = 1 message).
+//
+// Lifetime model is identical to topic_wrapper / bridge_info: the queue is created lazily on
+// the first send / receiver-create, and freed in agnocast_process_exit_cleanup() when the
+// last Agnocast process in the IPC namespace exits.
+//
+// All accesses are serialized through global_htables_rwsem.
+
+#define BRIDGE_MSG_QUEUE_HASH_BITS 4 /* IPC-ns count is typically 1; 16 buckets is generous */
+#define MAX_BRIDGE_MSG_QUEUE_LEN 1024
+
+struct bridge_msg_entry
+{
+  struct list_head node;
+  uint32_t size;     /* valid bytes in payload */
+  uint8_t payload[]; /* flexible array; allocated with size bytes */
+};
+
+struct bridge_msg_queue
+{
+  const struct ipc_namespace * ipc_ns;
+  struct list_head entries; /* FIFO: send pushes to tail, read pops from head */
+  uint32_t entry_count;
+  /* Count of currently-open receiver fds backed by this queue. The queue is freed only when
+   * (a) no alive Agnocast process remains in this IPC-namespace AND (b) fd_refcount == 0.
+   * This prevents use-after-free when a Bridge Manager holds a receiver fd while the last
+   * Agnocast entity in the IPC-ns exits — the queue stays alive until the fd is closed. */
+  uint32_t fd_refcount;
+  wait_queue_head_t wait; /* receiver fd .poll uses this */
+  struct hlist_node hnode;
+};
+
+extern DECLARE_HASHTABLE(bridge_msg_queue_htable, BRIDGE_MSG_QUEUE_HASH_BITS);
+
+struct bridge_msg_queue * agnocast_find_bridge_msg_queue(const struct ipc_namespace * ipc_ns);
+
+/* True iff any !exited Agnocast process belongs to ipc_ns, excluding `exclude` if non-NULL.
+ * Caller must hold global_htables_rwsem for read or write. */
+bool agnocast_has_alive_proc_in_ipc_ns(
+  const struct ipc_namespace * ipc_ns, const struct process_info * exclude);
+
+/* Free a bridge_msg_queue and all of its remaining entries. Removes it from
+ * bridge_msg_queue_htable. Caller must hold global_htables_rwsem for write. */
+void agnocast_free_bridge_msg_queue(struct bridge_msg_queue * q);
+
 int agnocast_get_size_sub_info_htable(struct topic_wrapper * wrapper);
 
 int agnocast_get_size_pub_info_htable(struct topic_wrapper * wrapper);

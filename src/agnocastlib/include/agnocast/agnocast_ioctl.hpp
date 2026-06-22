@@ -342,6 +342,16 @@ struct ioctl_set_ros2_publisher_num_args
   uint32_t ros2_publisher_num;
 };
 
+/* Maximum size (in bytes) of a single Bridge message carried through the kmod-resident
+ * bridge_msg_queue. Mirrors MAX_BRIDGE_MSG_SIZE in agnocast_kmod/agnocast.h. */
+#define MAX_BRIDGE_MSG_SIZE 2048
+
+struct ioctl_send_msg_to_bridge_args
+{
+  uint32_t size; /* valid payload size, 0 < size <= MAX_BRIDGE_MSG_SIZE */
+  uint8_t payload[MAX_BRIDGE_MSG_SIZE];
+};
+
 #define AGNOCAST_GET_VERSION_CMD _IOR(0xA6, 1, struct ioctl_get_version_args)
 #define AGNOCAST_ADD_PROCESS_CMD _IOWR(0xA6, 2, union ioctl_add_process_args)
 #define AGNOCAST_ADD_SUBSCRIBER_CMD _IOWR(0xA6, 3, union ioctl_add_subscriber_args)
@@ -366,5 +376,7 @@ struct ioctl_set_ros2_publisher_num_args
   _IOW(0xA6, 25, struct ioctl_set_ros2_subscriber_num_args)
 #define AGNOCAST_SET_ROS2_PUBLISHER_NUM_CMD _IOW(0xA6, 26, struct ioctl_set_ros2_publisher_num_args)
 #define AGNOCAST_NOTIFY_BRIDGE_SHUTDOWN_CMD _IO(0xA6, 27)
+#define AGNOCAST_SEND_MSG_TO_BRIDGE_CMD _IOW(0xA6, 28, struct ioctl_send_msg_to_bridge_args)
+#define AGNOCAST_CREATE_BRIDGE_MSG_RECEIVER_CMD _IO(0xA6, 29)
 
 }  // namespace agnocast

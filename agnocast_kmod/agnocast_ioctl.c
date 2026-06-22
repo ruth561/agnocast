@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
 #include "agnocast_internal.h"
 
+#include <linux/anon_inodes.h>
+#include <linux/file.h>
+#include <linux/poll.h>
+#include <linux/uaccess.h>
+#include <linux/wait.h>
+
 #ifndef KUNIT_BUILD
 // Kernel module uses global PIDs, whereas user-space and the interface between them use local PIDs.
 // Thus, PIDs must be converted from global to local before they are passed from kernel to user.
@@ -2134,6 +2140,239 @@ int agnocast_ioctl_check_and_request_bridge_shutdown(
   return 0;
 }
 
+// ================================================
+// Bridge message queue (kmod-resident replacement for the Bridge MQ)
+
+/* Look up the per-IPC-ns bridge_msg_queue, creating it on demand. Caller must hold
+ * global_htables_rwsem for write. Returns NULL on allocation failure. */
+static struct bridge_msg_queue * find_or_create_bridge_msg_queue(
+  const struct ipc_namespace * ipc_ns)
+{
+  struct bridge_msg_queue * q = agnocast_find_bridge_msg_queue(ipc_ns);
+  if (q) return q;
+
+  q = kmalloc(sizeof(*q), GFP_KERNEL);
+  if (!q) return NULL;
+
+  q->ipc_ns = ipc_ns;
+  INIT_LIST_HEAD(&q->entries);
+  q->entry_count = 0;
+  q->fd_refcount = 0;
+  init_waitqueue_head(&q->wait);
+  INIT_HLIST_NODE(&q->hnode);
+  hash_add(
+    bridge_msg_queue_htable, &q->hnode, hash_min((uintptr_t)ipc_ns, BRIDGE_MSG_QUEUE_HASH_BITS));
+  return q;
+}
+
+int agnocast_ioctl_send_msg_to_bridge(
+  const struct ipc_namespace * ipc_ns, const uint8_t * payload, uint32_t size)
+{
+  if (size == 0 || size > MAX_BRIDGE_MSG_SIZE) return -EINVAL;
+
+  int ret = 0;
+
+  down_write(&global_htables_rwsem);
+
+  struct bridge_msg_queue * q = find_or_create_bridge_msg_queue(ipc_ns);
+  if (!q) {
+    ret = -ENOMEM;
+    goto unlock;
+  }
+
+  if (q->entry_count >= MAX_BRIDGE_MSG_QUEUE_LEN) {
+    dev_warn_ratelimited(
+      agnocast_device, "bridge_msg_queue is full (count=%u). Dropping message. (%s)\n",
+      q->entry_count, __func__);
+    ret = -ENOSPC;
+    goto unlock;
+  }
+
+  struct bridge_msg_entry * entry = kmalloc(sizeof(struct bridge_msg_entry) + size, GFP_KERNEL);
+  if (!entry) {
+    ret = -ENOMEM;
+    goto unlock;
+  }
+
+  entry->size = size;
+  memcpy(entry->payload, payload, size);
+  INIT_LIST_HEAD(&entry->node);
+  list_add_tail(&entry->node, &q->entries);
+  q->entry_count++;
+
+  wake_up_interruptible(&q->wait);
+
+unlock:
+  up_write(&global_htables_rwsem);
+  return ret;
+}
+
+/* ---- receiver fd file_operations ---- */
+
+/* Detach → copy_to_user → on-failure-put-back read path.
+ *
+ *   1. Under global_htables_rwsem.write, verify q is alive, peek head->size, and
+ *      either return -EMSGSIZE (buffer too small, leave the message in place) or
+ *      detach the head entry from the FIFO.
+ *   2. Drop the lock and copy_to_user from the detached entry. Doing the copy
+ *      under the lock would block all data-plane ops on a user-space page fault.
+ *   3a. On success: kfree the entry and return its size.
+ *   3b. On failure: re-acquire the write lock and put the entry back at the head
+ *       of the queue with list_add(), preserving FIFO order (safe because the
+ *       receiver fd is a singleton per IPC-ns). If the queue has since been
+ *       freed (it shouldn't, because our fd holds an fd_refcount on q), kfree
+ *       the entry rather than leak it.
+ */
+static ssize_t bridge_msg_receiver_read(
+  struct file * file, char __user * buf, size_t count, loff_t * ppos)
+{
+  struct bridge_msg_queue * q = file->private_data;
+  if (!q) return -EBADF;
+
+  struct bridge_msg_entry * entry = NULL;
+
+  /* Phase 1: peek then detach under the write lock. */
+  for (;;) {
+    down_write(&global_htables_rwsem);
+
+    if (agnocast_find_bridge_msg_queue(q->ipc_ns) != q) {
+      /* Defensive guard: with the fd_refcount invariant, an open fd keeps q alive,
+       * so this branch should be unreachable. Return EOF if it ever fires. */
+      up_write(&global_htables_rwsem);
+      return 0;
+    }
+
+    if (!list_empty(&q->entries)) {
+      struct bridge_msg_entry * head = list_first_entry(&q->entries, struct bridge_msg_entry, node);
+
+      /* Datagram semantics: if the user buffer cannot fit the next message,
+       * leave it in place and signal -EMSGSIZE. */
+      if (count < head->size) {
+        up_write(&global_htables_rwsem);
+        return -EMSGSIZE;
+      }
+
+      entry = head;
+      list_del(&entry->node);
+      q->entry_count--;
+      up_write(&global_htables_rwsem);
+      break;
+    }
+
+    up_write(&global_htables_rwsem);
+
+    if (file->f_flags & O_NONBLOCK) return -EAGAIN;
+
+    if (wait_event_interruptible(
+          q->wait, !list_empty(&q->entries) || agnocast_find_bridge_msg_queue(q->ipc_ns) != q)) {
+      return -ERESTARTSYS;
+    }
+  }
+
+  /* Phase 2: copy outside the lock. */
+  if (!copy_to_user(buf, entry->payload, entry->size)) {
+    ssize_t size = (ssize_t)entry->size;
+    kfree(entry);
+    return size;
+  }
+
+  /* Phase 3b: copy_to_user failed — put the entry back at the head so the
+   * caller (or the next reader) can retry. Single-receiver invariant means
+   * list_add() at the head preserves FIFO order. */
+  down_write(&global_htables_rwsem);
+  if (agnocast_find_bridge_msg_queue(q->ipc_ns) == q) {
+    list_add(&entry->node, &q->entries);
+    q->entry_count++;
+    up_write(&global_htables_rwsem);
+    wake_up_interruptible(&q->wait);
+  } else {
+    /* Queue gone (should not happen while fd is open); drop the entry. */
+    up_write(&global_htables_rwsem);
+    kfree(entry);
+  }
+  return -EFAULT;
+}
+
+static __poll_t bridge_msg_receiver_poll(struct file * file, poll_table * wait)
+{
+  struct bridge_msg_queue * q = file->private_data;
+  if (!q) return EPOLLERR;
+
+  __poll_t mask = 0;
+  down_read(&global_htables_rwsem);
+  if (agnocast_find_bridge_msg_queue(q->ipc_ns) != q) {
+    up_read(&global_htables_rwsem);
+    return EPOLLHUP;
+  }
+  poll_wait(file, &q->wait, wait);
+  if (!list_empty(&q->entries)) mask |= EPOLLIN | EPOLLRDNORM;
+  up_read(&global_htables_rwsem);
+  return mask;
+}
+
+static int bridge_msg_receiver_release(struct inode * inode, struct file * file)
+{
+  struct bridge_msg_queue * q = file->private_data;
+  if (!q) return 0;
+
+  down_write(&global_htables_rwsem);
+  /* Defensive: q may have already been freed if exit-cleanup raced and our
+   * fd_refcount accounting is buggy. Re-lookup to be sure. */
+  if (agnocast_find_bridge_msg_queue(q->ipc_ns) == q) {
+    if (q->fd_refcount > 0) q->fd_refcount--;
+
+    /* If no Agnocast process is alive in this IPC-ns and we were the last open fd,
+     * the exit-cleanup path deferred freeing the queue to us. Do it now. */
+    if (q->fd_refcount == 0 && !agnocast_has_alive_proc_in_ipc_ns(q->ipc_ns, NULL)) {
+      agnocast_free_bridge_msg_queue(q);
+    }
+  }
+  up_write(&global_htables_rwsem);
+  file->private_data = NULL;
+  return 0;
+}
+
+static const struct file_operations bridge_msg_receiver_fops = {
+  .owner = THIS_MODULE,
+  .read = bridge_msg_receiver_read,
+  .poll = bridge_msg_receiver_poll,
+  .release = bridge_msg_receiver_release,
+};
+
+int agnocast_ioctl_create_bridge_msg_receiver(const struct ipc_namespace * ipc_ns)
+{
+  int ret;
+
+  down_write(&global_htables_rwsem);
+
+  struct bridge_msg_queue * q = find_or_create_bridge_msg_queue(ipc_ns);
+  if (!q) {
+    ret = -ENOMEM;
+    goto unlock;
+  }
+
+  /* Pre-incrementing fd_refcount before anon_inode_getfd guarantees that an exit-cleanup
+   * racing with us cannot free q between the alloc and the fd install. If the alloc
+   * fails we roll it back. */
+  q->fd_refcount++;
+
+  /* anon_inode_getfd does its own fd_install on success. We use O_CLOEXEC so the fd is
+   * automatically closed across exec() in user-space. */
+  ret = anon_inode_getfd(
+    "[agnocast_bridge_msg]", &bridge_msg_receiver_fops, q, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+  if (ret < 0) {
+    q->fd_refcount--;
+    /* On failure, drop the queue if it became unreferenced and orphaned. */
+    if (q->fd_refcount == 0 && !agnocast_has_alive_proc_in_ipc_ns(ipc_ns, NULL)) {
+      agnocast_free_bridge_msg_queue(q);
+    }
+  }
+
+unlock:
+  up_write(&global_htables_rwsem);
+  return ret;
+}
+
 static long get_version_cmd(struct ioctl_get_version_args __user * arg)
 {
   int ret = 0;
@@ -2732,6 +2971,38 @@ static long notify_bridge_shutdown_cmd(void)
   return ret;
 }
 
+static long send_msg_to_bridge_cmd(struct ioctl_send_msg_to_bridge_args __user * arg)
+{
+  const struct ipc_namespace * ipc_ns = current->nsproxy->ipc_ns;
+
+  /* size is validated by agnocast_ioctl_send_msg_to_bridge; here we only need to read enough
+   * of the user struct to know how much payload to copy. */
+  uint32_t size;
+  if (copy_from_user(&size, &arg->size, sizeof(size))) return -EFAULT;
+  if (size == 0 || size > MAX_BRIDGE_MSG_SIZE) return -EINVAL;
+
+  uint8_t * payload = kmalloc(size, GFP_KERNEL);
+  if (!payload) return -ENOMEM;
+
+  int ret;
+  if (copy_from_user(payload, arg->payload, size)) {
+    ret = -EFAULT;
+    goto out;
+  }
+
+  ret = agnocast_ioctl_send_msg_to_bridge(ipc_ns, payload, size);
+
+out:
+  kfree(payload);
+  return ret;
+}
+
+static long create_bridge_msg_receiver_cmd(void)
+{
+  const struct ipc_namespace * ipc_ns = current->nsproxy->ipc_ns;
+  return agnocast_ioctl_create_bridge_msg_receiver(ipc_ns);
+}
+
 long agnocast_ioctl(struct file * file, unsigned int cmd, unsigned long arg)
 {
   switch (cmd) {
@@ -2788,6 +3059,10 @@ long agnocast_ioctl(struct file * file, unsigned int cmd, unsigned long arg)
       return set_ros2_publisher_num_cmd((struct ioctl_set_ros2_publisher_num_args __user *)arg);
     case AGNOCAST_NOTIFY_BRIDGE_SHUTDOWN_CMD:
       return notify_bridge_shutdown_cmd();
+    case AGNOCAST_SEND_MSG_TO_BRIDGE_CMD:
+      return send_msg_to_bridge_cmd((struct ioctl_send_msg_to_bridge_args __user *)arg);
+    case AGNOCAST_CREATE_BRIDGE_MSG_RECEIVER_CMD:
+      return create_bridge_msg_receiver_cmd();
     default:
       return -EINVAL;
   }
@@ -3016,6 +3291,39 @@ pid_t agnocast_get_bridge_owner_pid(const char * topic_name, const struct ipc_na
     return br_info->pid;
   }
   return -1;
+}
+
+bool agnocast_has_bridge_msg_queue(const struct ipc_namespace * ipc_ns)
+{
+  return agnocast_find_bridge_msg_queue(ipc_ns) != NULL;
+}
+
+uint32_t agnocast_get_bridge_msg_queue_len(const struct ipc_namespace * ipc_ns)
+{
+  const struct bridge_msg_queue * q = agnocast_find_bridge_msg_queue(ipc_ns);
+  return q ? q->entry_count : 0;
+}
+
+int agnocast_peek_bridge_msg(
+  const struct ipc_namespace * ipc_ns, uint32_t index, uint8_t * out_buf, uint32_t out_buf_size,
+  uint32_t * out_size)
+{
+  const struct bridge_msg_queue * q = agnocast_find_bridge_msg_queue(ipc_ns);
+  if (!q) return -ENOENT;
+
+  const struct bridge_msg_entry * entry;
+  uint32_t i = 0;
+  list_for_each_entry(entry, &q->entries, node)
+  {
+    if (i == index) {
+      if (out_buf_size < entry->size) return -EMSGSIZE;
+      memcpy(out_buf, entry->payload, entry->size);
+      if (out_size) *out_size = entry->size;
+      return 0;
+    }
+    i++;
+  }
+  return -ENOENT;
 }
 
 #endif

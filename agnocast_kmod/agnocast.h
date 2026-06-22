@@ -277,6 +277,18 @@ struct ioctl_set_ros2_publisher_num_args
   uint32_t ros2_publisher_num;
 };
 
+/* Maximum size (in bytes) of a single Bridge message carried through the kmod-resident
+ * bridge_msg_queue. The kmod does not interpret the payload; it only enforces this upper
+ * bound. The current MqMsgPerformanceBridge in user-space is ~1.1 KB; 2048 gives ample
+ * headroom for adding fields to the Bridge metadata without bumping the kmod ABI. */
+#define MAX_BRIDGE_MSG_SIZE 2048
+
+struct ioctl_send_msg_to_bridge_args
+{
+  uint32_t size; /* valid payload size, 0 < size <= MAX_BRIDGE_MSG_SIZE */
+  uint8_t payload[MAX_BRIDGE_MSG_SIZE];
+};
+
 #define AGNOCAST_GET_VERSION_CMD _IOR(0xA6, 1, struct ioctl_get_version_args)
 #define AGNOCAST_ADD_PROCESS_CMD _IOWR(0xA6, 2, union ioctl_add_process_args)
 #define AGNOCAST_ADD_SUBSCRIBER_CMD _IOWR(0xA6, 3, union ioctl_add_subscriber_args)
@@ -300,6 +312,8 @@ struct ioctl_set_ros2_publisher_num_args
   _IOW(0xA6, 25, struct ioctl_set_ros2_subscriber_num_args)
 #define AGNOCAST_SET_ROS2_PUBLISHER_NUM_CMD _IOW(0xA6, 26, struct ioctl_set_ros2_publisher_num_args)
 #define AGNOCAST_NOTIFY_BRIDGE_SHUTDOWN_CMD _IO(0xA6, 27)
+#define AGNOCAST_SEND_MSG_TO_BRIDGE_CMD _IOW(0xA6, 28, struct ioctl_send_msg_to_bridge_args)
+#define AGNOCAST_CREATE_BRIDGE_MSG_RECEIVER_CMD _IO(0xA6, 29)
 
 // ================================================
 // ros2cli ioctls
@@ -464,6 +478,11 @@ int agnocast_ioctl_set_ros2_publisher_num(
 
 int agnocast_ioctl_notify_bridge_shutdown(const pid_t pid);
 
+int agnocast_ioctl_send_msg_to_bridge(
+  const struct ipc_namespace * ipc_ns, const uint8_t * payload, uint32_t size);
+
+int agnocast_ioctl_create_bridge_msg_receiver(const struct ipc_namespace * ipc_ns);
+
 int agnocast_ioctl_get_exit_process(
   const struct ipc_namespace * ipc_ns, struct ioctl_get_exit_process_args * ioctl_ret,
   struct exit_subscription_mq_info * mq_info_buf, uint32_t mq_info_buf_size,
@@ -506,4 +525,11 @@ int agnocast_get_topic_num(const struct ipc_namespace * ipc_ns);
 bool agnocast_is_in_topic_htable(const char * topic_name, const struct ipc_namespace * ipc_ns);
 bool agnocast_is_in_bridge_htable(const char * topic_name, const struct ipc_namespace * ipc_ns);
 pid_t agnocast_get_bridge_owner_pid(const char * topic_name, const struct ipc_namespace * ipc_ns);
+
+// Bridge message queue helpers
+bool agnocast_has_bridge_msg_queue(const struct ipc_namespace * ipc_ns);
+uint32_t agnocast_get_bridge_msg_queue_len(const struct ipc_namespace * ipc_ns);
+int agnocast_peek_bridge_msg(
+  const struct ipc_namespace * ipc_ns, uint32_t index, uint8_t * out_buf, uint32_t out_buf_size,
+  uint32_t * out_size);
 #endif

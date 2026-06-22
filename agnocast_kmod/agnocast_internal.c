@@ -10,6 +10,7 @@ DECLARE_RWSEM(global_htables_rwsem);
 DEFINE_HASHTABLE(proc_info_htable, PROC_INFO_HASH_BITS);
 DEFINE_HASHTABLE(topic_hashtable, TOPIC_HASH_BITS);
 DEFINE_HASHTABLE(bridge_htable, TOPIC_HASH_BITS);
+DEFINE_HASHTABLE(bridge_msg_queue_htable, BRIDGE_MSG_QUEUE_HASH_BITS);
 
 DEFINE_SPINLOCK(pid_queue_lock);
 pid_t exit_pid_queue[EXIT_QUEUE_SIZE];
@@ -203,6 +204,48 @@ void agnocast_remove_entry_node(struct topic_wrapper * wrapper, struct entry_nod
   kfree(en);
 }
 
+struct bridge_msg_queue * agnocast_find_bridge_msg_queue(const struct ipc_namespace * ipc_ns)
+{
+  struct bridge_msg_queue * q;
+  uint32_t hash_val = hash_min((uintptr_t)ipc_ns, BRIDGE_MSG_QUEUE_HASH_BITS);
+  hash_for_each_possible(bridge_msg_queue_htable, q, hnode, hash_val)
+  {
+    if (q->ipc_ns == ipc_ns) return q;
+  }
+  return NULL;
+}
+
+/* Returns true if any !exited Agnocast process belongs to `ipc_ns`, excluding `exclude` if
+ * non-NULL. Caller holds global_htables_rwsem (read or write). */
+bool agnocast_has_alive_proc_in_ipc_ns(
+  const struct ipc_namespace * ipc_ns, const struct process_info * exclude)
+{
+  struct process_info * proc_info;
+  int bkt;
+  hash_for_each(proc_info_htable, bkt, proc_info, node)
+  {
+    if (proc_info == exclude) continue;
+    if (proc_info->exited) continue;
+    if (proc_info->ipc_ns == ipc_ns) return true;
+  }
+  return false;
+}
+
+/* Free a single bridge_msg_queue and all of its entries. Caller holds global_htables_rwsem
+ * for write. */
+void agnocast_free_bridge_msg_queue(struct bridge_msg_queue * q)
+{
+  struct bridge_msg_entry * e;
+  struct bridge_msg_entry * tmp_e;
+  list_for_each_entry_safe(e, tmp_e, &q->entries, node)
+  {
+    list_del(&e->node);
+    kfree(e);
+  }
+  hash_del(&q->hnode);
+  kfree(q);
+}
+
 void agnocast_process_exit(void * data, struct task_struct * task)
 {
   // Wait until all threads in the thread group have exited.
@@ -317,6 +360,23 @@ void agnocast_process_exit_cleanup(const pid_t pid)
       hash_del(&br_info->node);
       kfree(br_info->topic_name);
       kfree(br_info);
+    }
+  }
+
+  /* If no other Agnocast process is still alive in this IPC namespace, release the
+   * per-IPC-ns bridge_msg_queue along with any unread entries — unless a receiver fd is
+   * still open, in which case the queue must outlive this process so the fd remains
+   * usable (its read()/poll() would otherwise dereference freed memory). The fd-close
+   * path (bridge_msg_receiver_release) handles the late-free case symmetrically. */
+  if (!agnocast_has_alive_proc_in_ipc_ns(proc_info->ipc_ns, proc_info)) {
+    struct bridge_msg_queue * q;
+    struct hlist_node * tmp_q;
+    int bkt_q;
+    hash_for_each_safe(bridge_msg_queue_htable, bkt_q, tmp_q, q, hnode)
+    {
+      if (q->ipc_ns != proc_info->ipc_ns) continue;
+      if (q->fd_refcount > 0) continue; /* defer free until last fd closes */
+      agnocast_free_bridge_msg_queue(q);
     }
   }
 
