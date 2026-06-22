@@ -38,13 +38,13 @@ SIGKILL を含む異常終了でも、Bridge 通知に使うリソースが OS �
 
 `AGNOCAST_BRIDGE_MODE=off` 時は通知経路自体を呼ばない、という現行のユーザー空間ゲートをそのまま残せること。
 
-### R5. Bridge 起動以前のエンティティ登録をバッファリングできること
+### R5. Bridge 起動以前のエンティティ通知をバッファリングできること
 
-最初の Agnocast プロセス内で、`fork()` 完了前にエンティティが生成された場合でも登録が失われないこと。Bridge は起動直後にバッファ済みの登録情報を一括取得できる。
+最初の Agnocast プロセス内で、`fork()` 完了前にエンティティが生成された場合でも通知が失われないこと。Bridge は起動直後にバッファ済みの通知を一括取得できる。
 
 ### R6. Bridge 終了後の挙動
 
-現状の運用では同一 IPC-namespace 内で Bridge は再生成されないが、kmod 側にはその制約を焼き込まない。**Bridge 終了後に登録されたエントリはキューに保持され、次に Bridge が立ち上がったときに受信される**こと。これは MQ ベースの現行実装が `/dev/mqueue/` 上のファイルを介して結果的に提供している性質 (Bridge 不在期間中の `mq_send` がカーネル内バッファに蓄積され、次の `mq_open(O_RDONLY)` で読み出せる) を新設計でも維持する、という意味である。
+現状の運用では同一 IPC-namespace 内で Bridge は再生成されないが、kmod 側にはその制約を焼き込まない。**Bridge 終了後に送信されたメッセージはキューに保持され、次に Bridge が立ち上がったときに受信される**こと。これは MQ ベースの現行実装が `/dev/mqueue/` 上のファイルを介して結果的に提供している性質 (Bridge 不在期間中の `mq_send` がカーネル内バッファに蓄積され、次の `mq_open(O_RDONLY)` で読み出せる) を新設計でも維持する、という意味である。
 
 ### R7. kmod ABI 後方互換
 
@@ -61,9 +61,9 @@ SIGKILL を含む異常終了でも、Bridge 通知に使うリソースが OS �
 | パターン | 既存実装 | 新設計での再利用 |
 | --- | --- | --- |
 | Per-IPC-namespace スコープの bridge トラッキング | `bridge_htable` / `agnocast_ioctl_add_bridge` / `is_performance_bridge_manager` flag in `process_info` | 「現在 alive な bridge_manager が誰か」を判定する既存ソース |
-| Per-IPC-namespace データを「最後の参照者が exit したとき」に回収 | `agnocast_process_exit_cleanup` 内で `topic_wrapper` / `bridge_info` を、参照を持つ pub/sub がそれぞれ 0 になったところで kfree | `bridge_registration_queue` も同じパスで `get_process_num(ipc_ns) == 0` のときに kfree (§5.6.6) |
+| Per-IPC-namespace データを「最後の参照者が exit したとき」に回収 | `agnocast_process_exit_cleanup` 内で `topic_wrapper` / `bridge_info` を、参照を持つ pub/sub がそれぞれ 0 になったところで kfree | `bridge_msg_queue` も同じパスで `get_process_num(ipc_ns) == 0` のときに kfree (§5.6.6) |
 | 2-phase get/commit ioctl で kmod のキューを drain する | `AGNOCAST_GET_EXIT_PROCESS_CMD` / `agnocast_commit_exit_process` (ロックを保持したまま `copy_to_user` しない) | receiver fd の `.read` で同型の 2-phase を採用 (§5.7) |
-| 2 層ロック階層 | `global_htables_rwsem` (top-level) + `topic_wrapper->topic_rwsem` (per-instance) | `bridge_registration_queue` は per-instance rwsem を持たず、`global_htables_rwsem` のみで保護 (ホットパスではないため) |
+| 2 層ロック階層 | `global_htables_rwsem` (top-level) + `topic_wrapper->topic_rwsem` (per-instance) | `bridge_msg_queue` は per-instance rwsem を持たず、`global_htables_rwsem` のみで保護 (ホットパスではないため) |
 
 ## 4. アプローチ比較 (Evaluated Approaches)
 
@@ -112,9 +112,9 @@ agnocast の mempool とは別に、IPC-ns 単位で `tmpfs` 上の共有 ring b
 
 | モデル | 内容 | 採用可否 |
 | --- | --- | --- |
-| (a) Bridge 存在中に作成された entity のみ | Bridge 起動を待ってから登録する | R2 違反 |
-| (b) Bridge 起動以前の entity も含む | Bridge 不在でも登録、Bridge は起動時にバッファを受信 | **採用** |
-| (c) Bridge 登録時に kmod から現存 entity の snapshot を取る | 登録を廃止し、`AGNOCAST_GET_TOPIC_*_INFO` 系を拡張 | 却下: スナップショット取得は Bridge 起動時の一度限りであり、Bridge が稼働している間に新たに生成されたエンティティへの対応が別途必要になる。結局 (b) と同等のプッシュ機構を残したうえでスナップショット API も追加することになり、複雑さが (b) 単独より増す。またメッセージ型名・shadow node 情報は kmod が IPC を行う上では不要なデータであり、Bridge が alive でない状態でもすべての pub/sub エントリに保持し続けるメモリコストが生じる。 |
+| (a) Bridge 存在中に作成された entity のみ | Bridge 起動を待ってから送信する | R2 違反 |
+| (b) Bridge 起動以前の entity も含む | Bridge 不在でも送信、Bridge は起動時にバッファを受信 | **採用** |
+| (c) Bridge 起動時に kmod から現存 entity の snapshot を取る | メッセージ送信を廃止し、`AGNOCAST_GET_TOPIC_*_INFO` 系を拡張 | 却下: スナップショット取得は Bridge 起動時の一度限りであり、Bridge が稼働している間に新たに生成されたエンティティへの対応が別途必要になる。結局 (b) と同等のプッシュ機構を残したうえでスナップショット API も追加することになり、複雑さが (b) 単独より増す。またメッセージ型名・shadow node 情報は kmod が IPC を行う上では不要なデータであり、Bridge が alive でない状態でもすべての pub/sub エントリに保持し続けるメモリコストが生じる。 |
 
 (b) を採用することで、ペイロードと所有者がそれぞれ「user-space で完結する Bridge 固有メタ」「kmod が責務を持つ FIFO の物理的存在」に綺麗に分離できる。
 
@@ -124,144 +124,148 @@ agnocast の mempool とは別に、IPC-ns 単位で `tmpfs` 上の共有 ring b
 
 | 番号 | 名前 | 方向 | 用途 |
 | --- | --- | --- | --- |
-| `_IOW(0xA6, 28, struct ioctl_register_bridge_args)` | `AGNOCAST_REGISTER_BRIDGE_CMD` | エンティティ → kmod | エンティティ作成時、現行の `send_mq_message` の代替。`MqMsgPerformanceBridge` 1 件を opaque バイト列としてキュー末尾へ追加する。 |
-| `_IO(0xA6, 29)` | `AGNOCAST_CREATE_BRIDGE_REGISTRATION_RECEIVER_CMD` | kmod → bridge_manager | Bridge Manager 起動時に 1 回呼び出し、登録キュー受信専用の anonymous fd を生成して返す (戻り値が新 fd)。この fd を `epoll` に登録し、EPOLLIN 発火後に `read()` で `MqMsgPerformanceBridge` エントリを取り出す。 |
+| `_IOW(0xA6, 28, struct ioctl_send_msg_to_bridge_args)` | `AGNOCAST_SEND_MSG_TO_BRIDGE_CMD` | エンティティ → kmod | 現行の `send_mq_message` の代替。任意の Bridge 向けメッセージ。1 件を opaque な可変長バイト列 (size と payload のペア) としてキュー末尾へ追加する。kmod は中身を一切解釈しない。 |
+| `_IO(0xA6, 29)` | `AGNOCAST_CREATE_BRIDGE_MSG_RECEIVER_CMD` | kmod → bridge_manager | Bridge Manager 起動時に 1 回呼び出し、Bridge 向けメッセージ受信専用の anonymous fd を生成して返す (戻り値が新 fd)。この fd を `epoll` に登録し、EPOLLIN 発火後に `read()` で datagram を 1 件ずつ取り出す。 |
 
 `AGNOCAST_NOTIFY_BRIDGE_SHUTDOWN_CMD` (既存) と process exit fastpath (既存 `agnocast_process_exit_cleanup`) の 2 つは bridge_manager 終了の検知点として再利用する。新規の終了用 ioctl は追加しない。
 
 ### 5.2. ペイロード型
 
-kmod は `MqMsgPerformanceBridge` の内容を解釈しない。ペイロードは **opaque な固定長バイト列**として扱い、kmod 側には構造体定義を持ち込まない。
+kmod は Bridge 向けメッセージの中身を一切解釈しない。ペイロードは **opaque な可変長バイト列**として扱い、kmod 側には `MqMsgPerformanceBridge` の構造体定義もサイズ定数も持ち込まない。これにより、将来 Bridge メッセージのレイアウトを拡張・変更しても kmod を minor bump しないで済む。
 
 ```c
 /* agnocast.h */
 
-/* user-space の MqMsgPerformanceBridge と同一サイズ。
- * agnocastlib 側で static_assert(sizeof(MqMsgPerformanceBridge) ==
- *   BRIDGE_REGISTRATION_PAYLOAD_SIZE, ...) を設け、ABI ズレをコンパイル時に検出する。 */
-#define BRIDGE_REGISTRATION_PAYLOAD_SIZE 1128
+/* Bridge 向け 1 メッセージの上限。現行の MqMsgPerformanceBridge (~1.1 KB) より十分大きく
+ * とり、将来のメタデータ追加にリザーブを持たせる。kmod は上限としてしか見ない。 */
+#define MAX_BRIDGE_MSG_SIZE 2048
 
-struct ioctl_register_bridge_args
+struct ioctl_send_msg_to_bridge_args
 {
-  uint8_t payload[BRIDGE_REGISTRATION_PAYLOAD_SIZE];
+  uint32_t size;                       /* 実際に有効なバイト数 (<= MAX_BRIDGE_MSG_SIZE) */
+  uint8_t  payload[MAX_BRIDGE_MSG_SIZE];
 };
 ```
 
-user-space 側は `MqMsgPerformanceBridge` をそのまま維持し、ioctl 呼び出し時に `memcpy` でペイロードフィールドへ詰める。
+user-space 側は既存の `MqMsgPerformanceBridge` をそのまま維持し、ioctl 呼び出し時に `size = sizeof(MqMsgPerformanceBridge)` として `memcpy` でペイロードフィールドへ詰める。
 
 ```cpp
 // agnocastlib 側 (C++)
 static_assert(
-  sizeof(MqMsgPerformanceBridge) == BRIDGE_REGISTRATION_PAYLOAD_SIZE,
-  "MqMsgPerformanceBridge size does not match kmod BRIDGE_REGISTRATION_PAYLOAD_SIZE");
+  sizeof(MqMsgPerformanceBridge) <= MAX_BRIDGE_MSG_SIZE,
+  "MqMsgPerformanceBridge exceeds kmod MAX_BRIDGE_MSG_SIZE");
 
-struct ioctl_register_bridge_args args = {};
-std::memcpy(args.payload, &msg, sizeof(msg));
-ioctl(agnocast_fd, AGNOCAST_REGISTER_BRIDGE_CMD, &args);
+struct ioctl_send_msg_to_bridge_args args = {};
+args.size = sizeof(MqMsgPerformanceBridge);
+std::memcpy(args.payload, &msg, args.size);
+ioctl(agnocast_fd, AGNOCAST_SEND_MSG_TO_BRIDGE_CMD, &args);
 ```
 
-receiver fd を通じて受け取った側も同様に `memcpy` で `MqMsgPerformanceBridge` へ復元する。
+receiver fd を通じて受け取った側は `read(2)` の戻り値 (メッセージサイズ) を見て `MqMsgPerformanceBridge` にキャストする。
 
-> `BRIDGE_REGISTRATION_PAYLOAD_SIZE` の値は `MqMsgPerformanceBridge` の構成要素
-> (`MESSAGE_TYPE_BUFFER_SIZE=256`, `TOPIC_NAME_BUFFER_SIZE=256`, `topic_local_id_t=4`,
-> `SERVICE_TYPE_BUFFER_SIZE=256`, `SERVICE_NAME_BUFFER_SIZE=256`,
-> `NODE_NAME_BUFFER_SIZE=256` × 2, `bool` × 2 フィールド, `uint32_t direction`,
-> アライメントパディング) から導出される。
-> 将来 `MqMsgPerformanceBridge` のレイアウトが変わる場合は kmod の minor bump と同時に更新する。
+> kmod をロードした状態でメッセージレイアウトを変えることは許容される (`MAX_BRIDGE_MSG_SIZE` を越えない限り)。`MAX_BRIDGE_MSG_SIZE` を越える拡張が必要になったときのみ kmod の minor bump が起きる。
 
 ### 5.3. kmod 内部データ構造
 
 ```c
-struct bridge_registration_entry
+struct bridge_msg_entry
 {
-  uint8_t payload[BRIDGE_REGISTRATION_PAYLOAD_SIZE];  /* opaque: MqMsgPerformanceBridge 相当 */
+  uint32_t size;                   /* ペイロードの有効バイト数 */
   struct list_head node;
+  uint8_t payload[];               /* flexible array; 長さは size バイト */
 };
 
-struct bridge_registration_queue
+struct bridge_msg_queue
 {
   const struct ipc_namespace * ipc_ns;
-  struct list_head entries;        /* FIFO, 登録: tail / 受信: head */
+  struct list_head entries;        /* FIFO, send: tail / read: head */
   uint32_t entry_count;
   wait_queue_head_t wait;          /* receiver fd の .poll が poll_wait する */
   struct hlist_node hnode;
 };
 
-DECLARE_HASHTABLE(bridge_registration_queue_htable, 6);  /* IPC-ns 数は通常 1 〜 数個 */
+DECLARE_HASHTABLE(bridge_msg_queue_htable, 6);  /* IPC-ns 数は通常 1 〜 数個 */
 ```
 
-- 1 IPC-namespace につき 1 個。最初の `AGNOCAST_REGISTER_BRIDGE_CMD` または `AGNOCAST_CREATE_BRIDGE_REGISTRATION_RECEIVER_CMD` が来た時点で lazy に作成。
+- 1 IPC-namespace につき 1 個。最初の `AGNOCAST_SEND_MSG_TO_BRIDGE_CMD` または `AGNOCAST_CREATE_BRIDGE_MSG_RECEIVER_CMD` が来た時点で lazy に作成。
 - 既存 `bridge_htable` とは別の構造（`bridge_htable` は per-topic、こちらは per-IPC-ns）。
-- 主要フィールドは `topic_wrapper` / `bridge_info` と同じく **`global_htables_rwsem` の下で保護される** (§5.7)。`entries` と `entry_count` のみ hot-path を考慮して spinlock 不要 —— register / read も `global_htables_rwsem` に乗るだけで隔離が取れる。
-- `wait` のみ spinlock-like な kernel built-in の wait queue lock を使う (`wake_up_interruptible`)。
+- エントリは `kmalloc(sizeof(struct bridge_msg_entry) + size, GFP_KERNEL)` で実サイズ分だけ確保し、`MAX_BRIDGE_MSG_SIZE` 全部を使うわけではない。
+- 主要フィールドは `topic_wrapper` / `bridge_info` と同じく **`global_htables_rwsem` の下で保護される** (§5.7)。`entries` と `entry_count` も同一ロックに乗るため spinlock 不要。
+- `wait` のみ kernel built-in の wait queue lock を使う (`wake_up_interruptible`)。
 
 #### receiver fd
 
-`AGNOCAST_CREATE_BRIDGE_REGISTRATION_RECEIVER_CMD` は `anon_inode_getfd()` を用いて anonymous fd を作成する。`file->private_data` にキューへのポインタを持ち、以下の file operations を持つ。
+`AGNOCAST_CREATE_BRIDGE_MSG_RECEIVER_CMD` は `anon_inode_getfd()` を用いて anonymous fd を作成する。`file->private_data` にキューへのポインタを持ち、以下の file operations を持つ。
 
 ```c
-static const struct file_operations bridge_registration_receiver_fops = {
+static const struct file_operations bridge_msg_receiver_fops = {
   .owner   = THIS_MODULE,
-  .read    = bridge_registration_receiver_read,   /* キューからエントリを取り出す */
-  .poll    = bridge_registration_receiver_poll,   /* epoll 用: キュー非空で POLLIN */
-  .release = bridge_registration_receiver_release,
+  .read    = bridge_msg_receiver_read,    /* キューから 1 メッセージ取り出す (datagram) */
+  .poll    = bridge_msg_receiver_poll,    /* epoll 用: キュー非空で POLLIN */
+  .release = bridge_msg_receiver_release,
 };
 ```
 
-- **`.read`**: `down_read(&global_htables_rwsem)` でキューポインタの生存を保証し、エントリをローカルリストへ移動して `up_read` してから `copy_to_user` (BRIDGE_REGISTRATION_PAYLOAD_SIZE 単位)。O_NONBLOCK 時はキューが空なら `EAGAIN` を返す。
+- **`.read`**: **datagram セマンティクス**。1 回の `read` でキュー先頭の 1 メッセージを取り出し、そのメッセージの `size` バイトをユーザーバッファへ `copy_to_user`。ユーザーバッファがメッセージサイズより小さいと `-EMSGSIZE` を返しエントリはキューに残す (UDP ソケットと同じ振る舞い)。`down_read(&global_htables_rwsem)` でキューポインタの生存を保証し、エントリをローカルに取り出して `up_read` してから `copy_to_user`。O_NONBLOCK 時はキューが空なら `EAGAIN` を返す。
 - **`.poll`**: `down_read(&global_htables_rwsem)` で queue ポインタを取り、`poll_wait(file, &q->wait, wait)` の後、`list_empty(&q->entries) ? 0 : (POLLIN | POLLRDNORM)` を返す。
 - **`.release`**: キュー自体は破棄しない（次の Bridge Manager が別の receiver fd を作成して受信を継続できるようにする）。
 
 ### 5.4. キュー上限と溢れ時の動作
 
 ```c
-#define MAX_BRIDGE_REGISTRATION_QUEUE_SIZE 1024  /* per IPC-namespace */
+#define MAX_BRIDGE_MSG_QUEUE_LEN 1024  /* per IPC-namespace */
 ```
 
-- 1 件 ~1.1 KB → 上限到達時 ~1.1 MB / IPC-ns。
-- 上限に達した状態で登録が来た場合は **エンキューせず `-ENOSPC` を返す**。`dev_warn_ratelimited` で警告。
-- これは現行の `mq_send` が EAGAIN を返した場合の user-space 側挙動 (100 回 × 100 ms リトライ後にエラーログ) と等価か、それより安全なフォールバック挙動 (リトライしないので登録のレイテンシが青天井にならない)。
+- 1 エントリの実サイズは `size` だけのため、`MqMsgPerformanceBridge` (~1.1 KB) リクエストのみ送られるケースで上限到達時 ~1.1 MB / IPC-ns。他のメッセージ種別が併用されるとさらに小さくなる。
+- 上限に達した状態で送信が来た場合は **エンキューせず `-ENOSPC` を返す**。`dev_warn_ratelimited` で警告。
+- これは現行の `mq_send` が EAGAIN を返した場合の user-space 側挙動 (100 回 × 100 ms リトライ後にエラーログ) と等価か、それより安全なフォールバック挙動 (リトライしないので送信のレイテンシが青天井にならない)。
 
-`MAX_BRIDGE_REGISTRATION_QUEUE_SIZE` は現行の `PERFORMANCE_BRIDGE_MQ_MAX_MESSAGES = 256` を 4 倍程度にした安全側の値。Autoware 規模 (~数百ノード) で、Bridge 起動前バッファとして十分なヘッドルームを確保する。
+`MAX_BRIDGE_MSG_QUEUE_LEN` は現行の `PERFORMANCE_BRIDGE_MQ_MAX_MESSAGES = 256` を 4 倍程度にした安全側の値。Autoware 規模 (~数百ノード) で、Bridge 起動前バッファとして十分なヘッドルームを確保する。
 
 ### 5.5. 通知機構: receiver fd
 
-`AGNOCAST_CREATE_BRIDGE_REGISTRATION_RECEIVER_CMD` が返す anonymous fd を Bridge Manager が `epoll` に登録する。`agnocast` キャラクタデバイス本体の `file_operations` には変更を加えない。
+`AGNOCAST_CREATE_BRIDGE_MSG_RECEIVER_CMD` が返す anonymous fd を Bridge Manager が `epoll` に登録する。`agnocast` キャラクタデバイス本体の `file_operations` には変更を加えない。
 
 #### 登録側 (エンティティプロセス)
 
-`AGNOCAST_REGISTER_BRIDGE_CMD` の ioctl ハンドラは、エントリをキュー末尾へ追加した後に `wake_up_interruptible(&q->wait)` を呼び、Bridge Manager の `epoll_wait` を起こす。
+`AGNOCAST_SEND_MSG_TO_BRIDGE_CMD` の ioctl ハンドラは、エントリをキュー末尾へ追加した後に `wake_up_interruptible(&q->wait)` を呼び、Bridge Manager の `epoll_wait` を起こす。
+
+#### 送信側 (エンティティプロセス)
+
+`AGNOCAST_SEND_MSG_TO_BRIDGE_CMD` の ioctl ハンドラは、エントリをキュー末尾へ追加した後に `wake_up_interruptible(&q->wait)` を呼び、Bridge Manager の `epoll_wait` を起こす。
 
 #### 受信側 (Bridge Manager)
 
 ```cpp
 // Bridge Manager 起動シーケンス
 const int receiver_fd =
-  ioctl(agnocast_fd_, AGNOCAST_CREATE_BRIDGE_REGISTRATION_RECEIVER_CMD);
+  ioctl(agnocast_fd_, AGNOCAST_CREATE_BRIDGE_MSG_RECEIVER_CMD);
 if (receiver_fd < 0) { /* fatal */ }
-event_loop_.register_bridge_registration_receiver(receiver_fd,
-  [this]() { this->on_bridge_registrations(); });
+event_loop_.register_bridge_msg_receiver(receiver_fd,
+  [this]() { this->on_bridge_msgs(); });
 ```
 
-`IpcEventLoopBase` は `receiver_fd` を `epoll(EPOLLIN | EPOLLET)` で監視する。EPOLLIN 発火後、`on_bridge_registrations()` は `read(receiver_fd, buf, sizeof(buf))` を EAGAIN が返るまでループし、受け取ったエントリ群を既存の `on_mq_request` 相当ロジックで処理する。
+`IpcEventLoopBase` は `receiver_fd` を `epoll(EPOLLIN | EPOLLET)` で監視する。EPOLLIN 発火後、`on_bridge_msgs()` は `read(receiver_fd, buf, sizeof(buf))` を EAGAIN が返るまでループし、受け取った 1 メッセージをサイズに基づいて適切な型として処理する。
 
 ```cpp
-void on_bridge_registrations()
+void on_bridge_msgs()
 {
-  constexpr size_t kBatchSize = 16;
-  std::array<MqMsgPerformanceBridge, kBatchSize> buf;
+  alignas(MqMsgPerformanceBridge) std::array<uint8_t, MAX_BRIDGE_MSG_SIZE> buf;
   for (;;) {
-    ssize_t n = read(receiver_fd_, buf.data(), sizeof(buf));
+    ssize_t n = read(receiver_fd_, buf.data(), buf.size());
     if (n <= 0) break;  // EAGAIN または EOF
-    const size_t count = n / sizeof(MqMsgPerformanceBridge);
-    for (size_t i = 0; i < count; ++i) {
-      process_bridge_registration(buf[i]);  // 既存の on_mq_request 相当
+    if (n == sizeof(MqMsgPerformanceBridge)) {
+      MqMsgPerformanceBridge msg;
+      std::memcpy(&msg, buf.data(), n);
+      process_bridge_registration(msg);  // 既存の on_mq_request 相当
+    } else {
+      RCLCPP_WARN(logger_, "unknown bridge message size: %zd", n);
     }
   }
 }
 ```
 
-この設計により `IpcEventLoopBase` の Primary MQ (`create_mq_name_for_bridge`) を**廃止**でき、`mq_open` / `mq_close` / `mq_unlink` を含む MQ 初期化パスがすべて削除される。epoll ループ本体の構造変更は `register_aux_mq` → `register_bridge_registration_receiver` の差し替えのみ。
+この設計により `IpcEventLoopBase` の Primary MQ (`create_mq_name_for_bridge`) を**廃止**でき、`mq_open` / `mq_close` / `mq_unlink` を含む MQ 初期化パスがすべて削除される。epoll ループ本体の構造変更は `register_aux_mq` → `register_bridge_msg_receiver` の差し替えのみ。
 
 ### 5.6. ライフサイクル
 
@@ -269,31 +273,31 @@ void on_bridge_registrations()
 
 #### 5.6.1. キュー生成
 
-最初の `AGNOCAST_REGISTER_BRIDGE_CMD` または `AGNOCAST_CREATE_BRIDGE_REGISTRATION_RECEIVER_CMD` を受けた時点で、対応する IPC-ns の `bridge_registration_queue` を `global_htables_rwsem.write` の下で kmalloc し、`bridge_registration_queue_htable` に登録する。
+最初の `AGNOCAST_SEND_MSG_TO_BRIDGE_CMD` または `AGNOCAST_CREATE_BRIDGE_MSG_RECEIVER_CMD` を受けた時点で、対応する IPC-ns の `bridge_msg_queue` を `global_htables_rwsem.write` の下で kmalloc し、`bridge_msg_queue_htable` に登録する。
 
 #### 5.6.2. Bridge Manager 起動シーケンス
 
 1. `acquire_agnocast_resources_for_bridge()` 内で `AGNOCAST_ADD_PROCESS_CMD(is_performance_bridge_manager=true)` を発行 (既存)。
-2. `AGNOCAST_CREATE_BRIDGE_REGISTRATION_RECEIVER_CMD` を呼び出して receiver fd を取得し、`IpcEventLoopBase` の epoll に登録。
-3. `spin_once` の最初の呼び出しでバッファ済み登録エントリを受信し、現行 `on_mq_request` と同等のロジックでブリッジを生成。
+2. `AGNOCAST_CREATE_BRIDGE_MSG_RECEIVER_CMD` を呼び出して receiver fd を取得し、`IpcEventLoopBase` の epoll に登録。
+3. `spin_once` の最初の呼び出しでバッファ済みメッセージを受信し、現行 `on_mq_request` と同等のロジックでブリッジを生成。
 
-R5 の「Bridge 起動以前の entity も含む」要件はこれで満たされる (登録はすでに kmod 内のキューに溜まっているため、起動直後の read で取り出せる)。
+R5 の「Bridge 起動以前の entity も含む」要件はこれで満たされる (メッセージはすでに kmod 内のキューに溜まっているため、起動直後の read で取り出せる)。
 
 #### 5.6.3. Bridge Manager 正常終了
 
-`AGNOCAST_NOTIFY_BRIDGE_SHUTDOWN_CMD` は **キューをクリアしない**。`process_info->is_performance_bridge_manager` を `false` に倒すだけ (既存挙動)。Bridge Manager プロセスが保持していた receiver fd は `close(2)` またはプロセス終了で OS が自動回収する。`bridge_registration_queue` 本体は保持され、以降に登録されたエントリとあわせて、次に同 IPC-ns で `AGNOCAST_CREATE_BRIDGE_REGISTRATION_RECEIVER_CMD` を発行した Bridge が受信することになる。
+`AGNOCAST_NOTIFY_BRIDGE_SHUTDOWN_CMD` は **キューをクリアしない**。`process_info->is_performance_bridge_manager` を `false` に倒すだけ (既存挙動)。Bridge Manager プロセスが保持していた receiver fd は `close(2)` またはプロセス終了で OS が自動回収する。`bridge_msg_queue` 本体は保持され、以降に送信されたメッセージとあわせて、次に同 IPC-ns で `AGNOCAST_CREATE_BRIDGE_MSG_RECEIVER_CMD` を発行した Bridge が受信することになる。
 
-> 現状の運用では同 IPC-ns に Bridge は再生成されない (R6) が、kmod ABI として「Bridge は再起動可能」「Bridge 不在期間中の登録も次の Bridge で受け取れる」を保証しておくことで、将来の運用変更（例: Bridge crash 時の自動再 fork）を妨げない。
+> 現状の運用では同 IPC-ns に Bridge は再生成されない (R6) が、kmod ABI として「Bridge は再起動可能」「Bridge 不在期間中のメッセージも次の Bridge で受け取れる」を保証しておくことで、将来の運用変更（例: Bridge crash 時の自動再 fork）を妨げない。
 
 #### 5.6.4. Bridge Manager 異常終了
 
 `agnocast_process_exit_cleanup` 経由の既存パスで `process_info->is_performance_bridge_manager == true` だった場合も同様に **キューをクリアしない**。receiver fd は SIGKILL 時もプロセス終了でカーネルが自動 close する (anonymous fd はプロセスの fd table に属するため)。
 
-> Bridge が死亡した瞬間、キューに残っていたエントリは「死亡した Bridge が読みきれなかった分」である。新しい Bridge から見れば「Bridge 不在期間中の登録」と区別する意味はないため、まとめて次の Bridge へ渡すのが自然。Bridge 側にはすでに `check_and_remove_request_cache` / `remove_invalid_requests` による dead-target 検知 (`get_subscriber_qos`/`get_publisher_qos` ioctl をプローブにして死んだ entity を弾く) が実装済みなので、古いエントリが新 Bridge を誤動作させる懸念はない。
+> Bridge が死亡した瞬間、キューに残っていたメッセージは「死亡した Bridge が読みきれなかった分」である。新しい Bridge から見れば「Bridge 不在期間中のメッセージ」と区別する意味はないため、まとめて次の Bridge へ渡すのが自然。Bridge 側にはすでに `check_and_remove_request_cache` / `remove_invalid_requests` による dead-target 検知 (`get_subscriber_qos`/`get_publisher_qos` ioctl をプローブにして死んだ entity を弾く) が実装済みなので、古いエントリが新 Bridge を誤動作させる懸念はない。
 
 #### 5.6.5. キュー上限と Bridge 不在期間中の保護
 
-Bridge 終了後にキューがクリアされないため、「Bridge が二度と起動しない」運用 (現状の Autoware 動作) では、登録が来るたびにキューが伸び続け、最終的に §5.4 の `MAX_BRIDGE_REGISTRATION_QUEUE_SIZE = 1024` で頭打ちになる。上限到達後の登録は `-ENOSPC` で静かに落とされる (運用上の検知性は `dev_warn_ratelimited`)。これは現状の MQ 実装が `MAX_MESSAGES = 256` で先に頭打ちになる挙動と等価で、本設計が悪化させるシナリオではない。
+Bridge 終了後にキューがクリアされないため、「Bridge が二度と起動しない」運用 (現状の Autoware 動作) では、送信が来るたびにキューが伸び続け、最終的に §5.4 の `MAX_BRIDGE_MSG_QUEUE_LEN = 1024` で頭打ちになる。上限到達後の送信は `-ENOSPC` で静かに落とされる (運用上の検知性は `dev_warn_ratelimited`)。これは現状の MQ 実装が `MAX_MESSAGES = 256` で先に頭打ちになる挙動と等価で、本設計が悪化させるシナリオではない。
 
 #### 5.6.6. キュー破棄 (主経路)
 
@@ -302,15 +306,15 @@ Bridge 終了後にキューがクリアされないため、「Bridge が二度
 ```c
 // agnocast_process_exit_cleanup() の末尾に追加
 if (get_process_num(proc_info->ipc_ns) == 0) {
-  struct bridge_registration_queue * q;
+  struct bridge_msg_queue * q;
   struct hlist_node * tmp;
   int bkt;
-  hash_for_each_safe(bridge_registration_queue_htable, bkt, tmp, q, hnode) {
+  hash_for_each_safe(bridge_msg_queue_htable, bkt, tmp, q, hnode) {
     if (!ipc_eq(q->ipc_ns, proc_info->ipc_ns)) continue;
     hash_del(&q->hnode);
-    /* entries はすでに receiver fd がいないため push はもう来ない。
-     * 未読みエントリをすべて解放。 */
-    struct bridge_registration_entry * e, * ne;
+    /* entries はすでに receiver fd がいないため send はもう来ない。
+     * 未読エントリをすべて解放。 */
+    struct bridge_msg_entry * e, * ne;
     list_for_each_entry_safe(e, ne, &q->entries, node) {
       list_del(&e->node);
       kfree(e);
@@ -324,21 +328,21 @@ if (get_process_num(proc_info->ipc_ns) == 0) {
 
 #### 5.6.7. キュー破棄 (safety net)
 
-モジュールアンロード時にさらに `agnocast_exit_free_data` で `bridge_registration_queue_htable` をループ削除し、残っているキューとエントリを kfree する (万一 §5.6.6 を通らずに生㐄残っていた場合に備えた保険)。R1 を満たす最終リソース回収点。
+モジュールアンロード時にさらに `agnocast_exit_free_data` で `bridge_msg_queue_htable` をループ削除し、残っているキューとエントリを kfree する (万一 §5.6.6 を通らずに生き残っていた場合に備えた保険)。R1 を満たす最終リソース回収点。
 
 ### 5.7. ロック設計
 
-既存 kmod の 2 層ロック階層 (`global_htables_rwsem` → `topic_wrapper->topic_rwsem`) に乗る。`bridge_registration_queue` は `topic_rwsem` 相当の per-instance rwsem を持たず、`global_htables_rwsem` だけで保護する。これで十分な理由は、ホットパスではないため read-side との同期ずらしコストを許容できるから。
+既存 kmod の 2 層ロック階層 (`global_htables_rwsem` → `topic_wrapper->topic_rwsem`) に乗る。`bridge_msg_queue` は `topic_rwsem` 相当の per-instance rwsem を持たず、`global_htables_rwsem` だけで保護する。これで十分な理由は、ホットパスではないため read-side との同期ずらしコストを許容できるから。
 
 | 操作 | 取るロック |
 | --- | --- |
-| `AGNOCAST_REGISTER_BRIDGE_CMD` (push) | `down_write(&global_htables_rwsem)` — キュー初回生成も同じロック下で行う |
-| receiver fd `.read` | `down_read(&global_htables_rwsem)` で queue ポインタの存在を保証し、エントリをローカルリストへ移動 → `up_read` → ロック外で `copy_to_user`。ステップ間の中間状態は local なためアトミック性不要。 |
+| `AGNOCAST_SEND_MSG_TO_BRIDGE_CMD` (send) | `down_write(&global_htables_rwsem)` — キュー初回生成も同じロック下で行う |
+| receiver fd `.read` | `down_read(&global_htables_rwsem)` で queue ポインタの存在を保証し、1 エントリをローカルに取り出し → `up_read` → ロック外で `copy_to_user`。 |
 | receiver fd `.poll` | `rcu_read_lock` または `down_read(&global_htables_rwsem)` → `list_empty()` チェック |
-| `AGNOCAST_CREATE_BRIDGE_REGISTRATION_RECEIVER_CMD` | `down_write(&global_htables_rwsem)` |
+| `AGNOCAST_CREATE_BRIDGE_MSG_RECEIVER_CMD` | `down_write(&global_htables_rwsem)` |
 | `agnocast_process_exit_cleanup` でのキュー kfree (§5.6.6) | 既存の `down_write(&global_htables_rwsem)` に相乗り、追加ロック不要 |
 
-**push path を write ロックにしてよい理由**: 現行 MQ の push も `mq_send` 内部で同等のシリアライゼーションを起こしており、ホットパスではない。`AGNOCAST_ADD_SUBSCRIBER_CMD` / `AGNOCAST_ADD_PUBLISHER_CMD` も同じ write を取っており、entity 生成パスのロック粒度と一致している。データプレーン (`publish` / `receive`) は一切巻き込まれないため R8 は満たされる。
+**send path を write ロックにしてよい理由**: 現行 MQ の push も `mq_send` 内部で同等のシリアライゼーションを起こしており、ホットパスではない。`AGNOCAST_ADD_SUBSCRIBER_CMD` / `AGNOCAST_ADD_PUBLISHER_CMD` も同じ write を取っており、entity 生成パスのロック粒度と一致している。データプレーン (`publish` / `receive`) は一切巻き込まれないため R8 は満たされる。
 
 **read path を read ロック + lock-free リスト移動にしない理由**: receiver fd は 1 プロセス (Bridge Manager) しか使わないため read 同士の競合はない。`down_read` で queue ポインタの dangling を防ぐだけで足りる。
 
@@ -348,7 +352,7 @@ if (get_process_num(proc_info->ipc_ns) == 0) {
 
 #### 5.8.1. `agnocast_publisher.cpp` / `agnocast_subscription.cpp` / 各種 service 生成パス
 
-`send_mq_message(...)` 経由の `mq_open(O_CREAT|O_WRONLY|O_NONBLOCK)` → `mq_send` → `mq_close` のシーケンスを `ioctl(agnocast_fd, AGNOCAST_REGISTER_BRIDGE_CMD, &args)` の 1 回呼び出しに置き換える。
+`send_mq_message(...)` 経由の `mq_open(O_CREAT|O_WRONLY|O_NONBLOCK)` → `mq_send` → `mq_close` のシーケンスを `ioctl(agnocast_fd, AGNOCAST_SEND_MSG_TO_BRIDGE_CMD, &args)` の 1 回呼び出しに置き換える。
 
 ```cpp
 // agnocast_bridge_node.hpp (after)
@@ -366,11 +370,12 @@ inline void send_performance_pubsub_bridge_registration_by_type_name(
   if (!reason.empty()) { /* 既存と同じエラー処理 */ }
 
   static_assert(
-    sizeof(msg) == BRIDGE_REGISTRATION_PAYLOAD_SIZE, "MqMsgPerformanceBridge size mismatch");
-  struct ioctl_register_bridge_args args = {};
-  std::memcpy(args.payload, &msg, sizeof(msg));
+    sizeof(msg) <= MAX_BRIDGE_MSG_SIZE, "MqMsgPerformanceBridge exceeds kmod MAX_BRIDGE_MSG_SIZE");
+  struct ioctl_send_msg_to_bridge_args args = {};
+  args.size = sizeof(msg);
+  std::memcpy(args.payload, &msg, args.size);
 
-  if (ioctl(agnocast_fd, AGNOCAST_REGISTER_BRIDGE_CMD, &args) < 0) {
+  if (ioctl(agnocast_fd, AGNOCAST_SEND_MSG_TO_BRIDGE_CMD, &args) < 0) {
     if (errno == ENOSPC) {
       /* キューが満杯。現行 mq_send EAGAIN 後の挙動と同じく warn して諦める */
     } else {
@@ -385,46 +390,46 @@ inline void send_performance_pubsub_bridge_registration_by_type_name(
 #### 5.8.2. `IpcEventLoopBase`
 
 - Primary MQ (`create_mq_name_for_bridge`) の `setup_mq` / `mq_close` / `mq_unlink` を削除。
-- Bridge Manager 起動時に `ioctl(agnocast_fd_, AGNOCAST_CREATE_BRIDGE_REGISTRATION_RECEIVER_CMD)` を呼び出して receiver fd を取得するセットアップを追加。
-- `set_mq_handler(EventCallback)` を `register_bridge_registration_receiver(int fd, EventCallback cb)` に置き換え、既存の `aux_mqs_` 同様に epoll へ登録する。コールバックは fd の `read()` ループを呼び出す形に変更。
+- Bridge Manager 起動時に `ioctl(agnocast_fd_, AGNOCAST_CREATE_BRIDGE_MSG_RECEIVER_CMD)` を呼び出して receiver fd を取得するセットアップを追加。
+- `set_mq_handler(EventCallback)` を `register_bridge_msg_receiver(int fd, EventCallback cb)` に置き換え、既存の `aux_mqs_` 同様に epoll へ登録する。コールバックは fd の `read()` ループを呼び出し、`read` の戻り値サイズでメッセージ型を判別する形に変更。
 
 #### 5.8.3. `poll_for_unlink`
 
-`mq_unlink(create_mq_name_for_bridge(PERFORMANCE_BRIDGE_VIRTUAL_PID))` を含むブロックを削除する (kmod 経由化された Bridge 登録に MQ ファイルは存在しない)。
+`mq_unlink(create_mq_name_for_bridge(PERFORMANCE_BRIDGE_VIRTUAL_PID))` を含むブロックを削除する (kmod 経由化された Bridge 向けメッセージに MQ ファイルは存在しない)。
 
 ### 5.9. AGNOCAST_BRIDGE_MODE = Off の挙動
 
-`register_pubsub_bridge_core` / `register_service_bridge_core` の `if (bridge_mode == BridgeMode::On)` ガードはそのまま残し、`Off` 時は `AGNOCAST_REGISTER_BRIDGE_CMD` を発行しない。kmod 側にも何も渡らないため、当該 IPC-ns で `bridge_registration_queue` が作られることもない。R4 を満たす。
+`register_pubsub_bridge_core` / `register_service_bridge_core` の `if (bridge_mode == BridgeMode::On)` ガードはそのまま残し、`Off` 時は `AGNOCAST_SEND_MSG_TO_BRIDGE_CMD` を発行しない。kmod 側にも何も渡らないため、当該 IPC-ns で `bridge_msg_queue` が作られることもない。R4 を満たす。
 
 ## 6. リスクとトレードオフ (Risks / Tradeoffs)
 
 | リスク | 影響 | 緩和策 |
 | --- | --- | --- |
-| kmod ABI にペイロードサイズ定数 (`BRIDGE_REGISTRATION_PAYLOAD_SIZE`) を持ち込む | `MqMsgPerformanceBridge` レイアウト変更時に kmod も更新が必要 | kmod はペイロード内容を解釈しない (opaque)。サイズ変更は minor bump で対応。agnocastlib に `static_assert` を設けコンパイル時に検出する。 |
+| kmod ABI に 1 メッセージ上限 (`MAX_BRIDGE_MSG_SIZE`) を持ち込む | 将来 Bridge メッセージがこの上限を超えるほど大きくなると kmod を minor bump して上限を広げる必要がある | `MAX_BRIDGE_MSG_SIZE = 2048` は現行の `MqMsgPerformanceBridge` の約 2 倍。Bridge メタデータの拡張に十分なリザーブ。kmod は中身を一切解釈しないため、上限以内のレイアウト変更は agnocastlib 単独で可能。 |
 | receiver fd の `.read` 呼び出しスレッドの IPC-ns が想定と異なる可能性 | receiver fd は作成時の `q` ポインタを `file->private_data` に持つため、どのスレッドから `read` しても同じキューを参照する。IPC-ns を再取得しないので問題なし。 | ドキュメントで「receiver fd は作成プロセス内でのみ使用すること」を明記する。 |
 | キュー上限で登録がドロップ | Bridge 終了後にキューをクリアしない (§5.6.3, §5.6.4) ため、Bridge が二度と起動しない運用では entity 作成のたびにキューが伸び続け、最終的に上限で押し出される | (a) 上限値 1024 で Autoware 規模を 1 桁カバー (b) 上限到達時は `dev_warn_ratelimited` で運用検知 (c) 現行 MQ も `MAX_MESSAGES=256` で先に頭打ちになるため本設計のほうが粗い意味でゆとりがある (d) Bridge 完全停止後も登録が来る挙動自体は `AGNOCAST_BRIDGE_MODE=off` で抑止可能 |
-| receiver fd と `AGNOCAST_REGISTER_BRIDGE_CMD` の同時アクセス競合 | 両者とも `global_htables_rwsem` を介して隔離される (write中は read がブロックされるためロストの不整合は起きない)。`copy_to_user` はロック外で行うため page fault をデータプレーンから隔離できる。 | 競合経路がないことを KUnit (`agnocast_kunit_bridge_registration_queue.c` 新設) でカバー |
-| Bridge が receiver fd を作る前に最初の Agnocast プロセスが exit し、その後新しいプロセスが上がるシナリオ | その場合 `agnocast_process_exit_cleanup` (§5.6.6) でキューが一旦 kfree され、新しいプロセスが最初の `AGNOCAST_REGISTER_BRIDGE_CMD` を出した時点で再生成される。 | Bridge も entity ももともと「最初のプロセスが起きるまで push されたエントリを受け取らない」セマンティクスであり、現状 MQ も同じ (誤差上のリスクとしては本設計で悪化していない)。 |
+| receiver fd と `AGNOCAST_SEND_MSG_TO_BRIDGE_CMD` の同時アクセス競合 | 両者とも `global_htables_rwsem` を介して隔離される (write中は read がブロックされるためロストの不整合は起きない)。`copy_to_user` はロック外で行うため page fault をデータプレーンから隔離できる。 | 競合経路がないことを KUnit (`agnocast_kunit_bridge_msg_queue.c` 新設) でカバー |
+| Bridge が receiver fd を作る前に最初の Agnocast プロセスが exit し、その後新しいプロセスが上がるシナリオ | その場合 `agnocast_process_exit_cleanup` (§5.6.6) でキューが一旦 kfree され、新しいプロセスが最初の `AGNOCAST_SEND_MSG_TO_BRIDGE_CMD` を出した時点で再生成される。 | Bridge も entity ももともと「最初のプロセスが起きるまで push されたエントリを受け取らない」セマンティックスであり、現状 MQ も同じ (誤差上のリスクとしては本設計で悪化していない)。 |
 | ABI 後方互換 | 旧 user-space + 新 kmod の組み合わせ時、旧 user-space は `mq_send` 経路を使い、bridge_manager (新) は kmod 経路しか聞かないので登録が届かない | `lib` / `kmod` のバージョンチェック (`compare_to_minor_version` 既存) で minor bump を強制し、最低保証として両側を同時更新する。トランジション期間として「kmod は MQ 経路も並行サポート」する案も検討可能だが、本設計では minor bump によりカット。 |
 
 ## 7. 実装計画 (Implementation Plan)
 
 1. **kmod (agnocast_kmod/)**
-   - `agnocast.h` に `BRIDGE_REGISTRATION_PAYLOAD_SIZE`, `ioctl_register_bridge_args`, `AGNOCAST_REGISTER_BRIDGE_CMD` (28), `AGNOCAST_CREATE_BRIDGE_REGISTRATION_RECEIVER_CMD` (29) を追加。
-   - `agnocast_internal.h` / `agnocast_internal.c` に `bridge_registration_entry`, `bridge_registration_queue` 構造体・hashtable・helpers を追加。
-   - `agnocast_ioctl.c` に `agnocast_ioctl_register_bridge` (push) / `agnocast_ioctl_create_bridge_registration_receiver` (anonymous fd 生成) を実装。
-   - `agnocast_ioctl.c` に `bridge_registration_receiver_fops` (`.read` / `.poll` / `.release`) を実装。
+   - `agnocast.h` に `MAX_BRIDGE_MSG_SIZE`, `ioctl_send_msg_to_bridge_args`, `AGNOCAST_SEND_MSG_TO_BRIDGE_CMD` (28), `AGNOCAST_CREATE_BRIDGE_MSG_RECEIVER_CMD` (29) を追加。`MqMsgPerformanceBridge` のサイズ定数は含めない。
+   - `agnocast_internal.h` / `agnocast_internal.c` に `bridge_msg_entry` (flexible array 付き), `bridge_msg_queue` 構造体・hashtable・helpers を追加。
+   - `agnocast_ioctl.c` に `agnocast_ioctl_send_msg_to_bridge` (push) / `agnocast_ioctl_create_bridge_msg_receiver` (anonymous fd 生成) を実装。`size` フィールドのバリデーション (`0 < size <= MAX_BRIDGE_MSG_SIZE`) を含む。
+   - `agnocast_ioctl.c` に `bridge_msg_receiver_fops` (`.read` / `.poll` / `.release`) を実装。「user buffer がメッセージより小さければ `-EMSGSIZE`」の datagram セマンティクスを採用。
    - `agnocast_ioctl_notify_bridge_shutdown` の変更なし（キュークリアは不要、既存フラグ操作のみ）。
-   - `agnocast_process_exit_cleanup` (`agnocast_internal.c`) の末尾に `bridge_registration_queue` のキューを IPC-ns スコープで kfree するブロックを 1 つ追加 (§5.6.6)。
-   - `agnocast_exit_free_data` に `bridge_registration_queue_htable` の全削除 (safety net) を追加。
-   - KUnit: `agnocast_kunit/agnocast_kunit_bridge_registration_queue.{c,h}` を新設し `agnocast_kunit_main.c` に登録。テスト項目: push·read の基本挙動、キュー上限、Bridge 不在中のバッファリング、`agnocast_process_exit_cleanup` での自動 kfree。
+   - `agnocast_process_exit_cleanup` (`agnocast_internal.c`) の末尾に `bridge_msg_queue` を IPC-ns スコープで kfree するブロックを 1 つ追加 (§5.6.6)。
+   - `agnocast_exit_free_data` に `bridge_msg_queue_htable` の全削除 (safety net) を追加。
+   - KUnit: `agnocast_kunit/agnocast_kunit_bridge_msg_queue.{c,h}` を新設し `agnocast_kunit_main.c` に登録。テスト項目: send·read の基本挙動、キュー上限、Bridge 不在中のバッファリング、`agnocast_process_exit_cleanup` での自動 kfree、可変長サイズのメッセージを正しく取り出せること。
 2. **agnocastlib (src/agnocastlib/)**
-   - `agnocast_mq.hpp` の `MqMsgPerformanceBridge` と `PERFORMANCE_BRIDGE_MQ_*` 定数は変更しない。`BRIDGE_REGISTRATION_PAYLOAD_SIZE` との `static_assert` を追加するのみ。
-   - `bridge/agnocast_bridge_node.hpp` の `send_mq_message` / `send_performance_*_bridge_registration*` を `AGNOCAST_REGISTER_BRIDGE_CMD` ioctl 1 回に置換。`send_mq_message` テンプレート・リトライループは削除。
-   - `bridge/agnocast_bridge_ipc_event_loop_base.hpp` の Primary MQ 廃止。`AGNOCAST_CREATE_BRIDGE_REGISTRATION_RECEIVER_CMD` で receiver fd を取得し epoll に登録するセットアップを追加。
-   - `bridge/performance/agnocast_performance_bridge_manager.cpp` の `on_mq_request` を `on_bridge_registrations` (`read()` ループ) にリネーム・実装変更。
+   - `agnocast_mq.hpp` の `MqMsgPerformanceBridge` と `PERFORMANCE_BRIDGE_MQ_*` 定数は変更しない。`sizeof(MqMsgPerformanceBridge) <= MAX_BRIDGE_MSG_SIZE` の `static_assert` を追加するのみ。
+   - `bridge/agnocast_bridge_node.hpp` の `send_mq_message` / `send_performance_*_bridge_registration*` を `AGNOCAST_SEND_MSG_TO_BRIDGE_CMD` ioctl 1 回に置換。`send_mq_message` テンプレート・リトライループは削除。
+   - `bridge/agnocast_bridge_ipc_event_loop_base.hpp` の Primary MQ 廃止。`AGNOCAST_CREATE_BRIDGE_MSG_RECEIVER_CMD` で receiver fd を取得し epoll に登録するセットアップを追加。
+   - `bridge/performance/agnocast_performance_bridge_manager.cpp` の `on_mq_request` を `on_bridge_msgs` (`read()` ループ) にリネーム・実装変更。read の戻り値サイズで `MqMsgPerformanceBridge` をディスパッチ。
    - `agnocast.cpp` の `poll_for_unlink` から bridge MQ unlink を削除。
-   - `test/unit/` に `BRIDGE_REGISTRATION_PAYLOAD_SIZE == sizeof(MqMsgPerformanceBridge)` を検証する `test_bridge_registration_ioctl.cpp` を追加。
+   - `test/unit/` に `sizeof(MqMsgPerformanceBridge) <= MAX_BRIDGE_MSG_SIZE` を検証する `test_bridge_msg_ioctl.cpp` を追加。
 3. **docs**
    - `docs/message_queue.md` の "How message queue is used in Agnocast Bridge?" 節を「kmod 経由化により廃止」と書き換え、本 Design Doc へリンク。
    - 本ファイル `bridge-mq-removal.design-doc.md` をリポジトリに残す。
@@ -436,6 +441,6 @@ inline void send_performance_pubsub_bridge_registration_by_type_name(
 
 ## 8. 将来の拡張 (Future Work)
 
-- **Daemon → bridge_manager の `MqMsgDaemonBridge` (`/agnocast_daemon_bridge_perf`) も同パターンで kmod 化可能**。Python 側 (`ros2agnocast_discovery_agent/bridge_decider.py`) は librt の `mq_open`/`mq_send` を ctypes で呼んでいるが、同じく `fcntl.ioctl()` で `AGNOCAST_REGISTER_DAEMON_BRIDGE_CMD` (仮) を呼ぶ形に置換できる。本設計の `bridge_registration_queue` をテンプレ化して 2 種のキュー (entity origin / daemon origin) に対応させればよい。スコープ拡大のため本 Design Doc の対象外。
+- **Daemon → bridge_manager の `MqMsgDaemonBridge` (`/agnocast_daemon_bridge_perf`) も同パターンで kmod 化可能**。本設計の `bridge_msg_queue` はメッセージの中身を一切解釈しないため、同じキューに複数種類のメッセージ (トピック登録 / daemon 起源のトピック設定 / 他) を混在させることも原理上は可能。Python 側 (`ros2agnocast_discovery_agent/bridge_decider.py`) は librt の `mq_open`/`mq_send` を ctypes で呼んでいるが、同じく `fcntl.ioctl()` で `AGNOCAST_SEND_MSG_TO_BRIDGE_CMD` を呼ぶ形に置換できる。スコープ拡大のため本 Design Doc の対象外。
 - **Subscriber publish notification (`/agnocast@<topic>@<id>`) はホットパス**（メッセージ毎に 1 回 `mq_send` する）であり、kmod 経由化はオーバヘッドが許容できない可能性が高い。引き続き MQ を使う前提で、`poll_for_unlink` 経由のクリーンアップ精度向上を別軸で進める。
-- 本 Design Doc の `bridge_registration_queue` は将来的に Bridge 以外の **「kmod が代理する非ホットパス通知」全般** に流用しうる。Bridge ヘルスチェック結果のフィードバック等を運ぶ汎用キューに抽象化する余地がある。
+- 本 Design Doc の `bridge_msg_queue` は、Bridge ヘルスチェック結果のフィードバックなど、将来「Bridge とプロセス間で交換したい非ホットパスメッセージ」をそのまま乗せられる。kmod は中身を解釈せず `MAX_BRIDGE_MSG_SIZE` 以内という制約だけ課すため、新しいメッセージ型を追加したいときに kmod を minor bump しなくてよい。
