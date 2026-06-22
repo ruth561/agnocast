@@ -1,6 +1,7 @@
 #pragma once
 
 #include "agnocast/agnocast_client.hpp"
+#include "agnocast/agnocast_ioctl.hpp"
 #include "agnocast/agnocast_mq.hpp"
 #include "agnocast/agnocast_publisher.hpp"
 #include "agnocast/agnocast_subscription.hpp"
@@ -9,7 +10,6 @@
 #include "rclcpp/version.h"
 
 #include <fcntl.h>
-#include <mqueue.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
 
@@ -132,46 +132,52 @@ private:
   }
 };
 
+// Hand a Bridge-bound message to the kmod's per-IPC-ns FIFO via the
+// AGNOCAST_SEND_MSG_TO_BRIDGE_CMD ioctl. The kmod treats the payload as an
+// opaque byte sequence, so any MqMsg* struct that fits in MAX_BRIDGE_MSG_SIZE
+// can be routed through here.
+//
+// ENOSPC means the per-IPC-ns queue is temporarily full (the Bridge Manager
+// has not drained it fast enough). This is the kmod-side analogue of the
+// old mq_send EAGAIN, so we retry on the same 100 × 100ms budget the old
+// implementation used. Any other errno is treated as fatal (logged once).
 template <typename MsgStruct>
-void send_mq_message(
-  const std::string & mq_name, const MsgStruct & msg, long msg_size_limit,
-  const rclcpp::Logger & logger)
+void send_msg_to_bridge_via_kmod(const MsgStruct & msg, const rclcpp::Logger & logger)
 {
-  struct mq_attr attr = {};
-  attr.mq_maxmsg = PERFORMANCE_BRIDGE_MQ_MAX_MESSAGES;
-  attr.mq_msgsize = msg_size_limit;
+  static_assert(
+    sizeof(MsgStruct) <= MAX_BRIDGE_MSG_SIZE, "bridge message exceeds kmod MAX_BRIDGE_MSG_SIZE");
 
-  mqd_t mq =
-    mq_open(mq_name.c_str(), O_CREAT | O_WRONLY | O_NONBLOCK | O_CLOEXEC, BRIDGE_MQ_PERMS, &attr);
+  ioctl_send_msg_to_bridge_args args{};
+  args.size = static_cast<uint32_t>(sizeof(MsgStruct));
+  std::memcpy(args.payload, &msg, sizeof(MsgStruct));
 
-  if (mq == (mqd_t)-1) {
-    RCLCPP_ERROR(
-      logger, "mq_open failed for name '%s': %s (errno: %d)", mq_name.c_str(), strerror(errno),
-      errno);
-    return;
-  }
-
-  constexpr int BRIDGE_MQ_SEND_MAX_RETRIES = 100;
-  constexpr useconds_t BRIDGE_MQ_SEND_RETRY_INTERVAL_US = 100000;  // 100ms
+  constexpr int BRIDGE_SEND_MAX_RETRIES = 100;
+  constexpr useconds_t BRIDGE_SEND_RETRY_INTERVAL_US = 100000;  // 100ms
 
   int send_result = -1;
   int last_errno = 0;
-  for (int retry = 0; retry <= BRIDGE_MQ_SEND_MAX_RETRIES; ++retry) {
-    send_result = mq_send(mq, reinterpret_cast<const char *>(&msg), sizeof(msg), 0);
+  for (int retry = 0; retry <= BRIDGE_SEND_MAX_RETRIES; ++retry) {
+    send_result = ioctl(agnocast_fd, AGNOCAST_SEND_MSG_TO_BRIDGE_CMD, &args);
     if (send_result == 0) break;
     last_errno = errno;
-    if (last_errno != EAGAIN) break;
-    if (retry < BRIDGE_MQ_SEND_MAX_RETRIES) {
-      usleep(BRIDGE_MQ_SEND_RETRY_INTERVAL_US);
+    if (last_errno != ENOSPC) break;
+    if (retry < BRIDGE_SEND_MAX_RETRIES) {
+      usleep(BRIDGE_SEND_RETRY_INTERVAL_US);
     }
   }
   if (send_result < 0) {
-    RCLCPP_ERROR(
-      logger, "mq_send failed for name '%s': %s (errno: %d)", mq_name.c_str(), strerror(last_errno),
-      last_errno);
+    if (last_errno == ENOSPC) {
+      RCLCPP_ERROR(
+        logger,
+        "AGNOCAST_SEND_MSG_TO_BRIDGE_CMD dropped a message: queue full after %d retries "
+        "(size=%zu)",
+        BRIDGE_SEND_MAX_RETRIES, sizeof(MsgStruct));
+    } else {
+      RCLCPP_ERROR(
+        logger, "AGNOCAST_SEND_MSG_TO_BRIDGE_CMD failed: %s (errno: %d)", strerror(last_errno),
+        last_errno);
+    }
   }
-
-  mq_close(mq);
 }
 
 template <typename MessageT>
@@ -203,8 +209,7 @@ inline void send_performance_pubsub_bridge_registration_by_type_name(
     exit(EXIT_FAILURE);
   }
 
-  std::string mq_name = create_mq_name_for_bridge(PERFORMANCE_BRIDGE_VIRTUAL_PID);
-  send_mq_message(mq_name, msg, PERFORMANCE_BRIDGE_MQ_MESSAGE_SIZE, logger);
+  send_msg_to_bridge_via_kmod(msg, logger);
 }
 
 template <typename ServiceT>
@@ -230,8 +235,7 @@ void send_performance_service_bridge_registration(
     exit(EXIT_FAILURE);
   }
 
-  std::string mq_name = create_mq_name_for_bridge(PERFORMANCE_BRIDGE_VIRTUAL_PID);
-  send_mq_message(mq_name, msg, PERFORMANCE_BRIDGE_MQ_MESSAGE_SIZE, logger);
+  send_msg_to_bridge_via_kmod(msg, logger);
 }
 
 }  // namespace agnocast

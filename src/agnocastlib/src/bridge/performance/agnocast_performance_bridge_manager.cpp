@@ -12,6 +12,10 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <array>
+#include <cerrno>
+#include <cstdint>
+#include <cstring>
 
 namespace agnocast
 {
@@ -55,7 +59,7 @@ void PerformanceBridgeManager::run()
 
   start_ros_execution();
 
-  event_loop_.set_mq_handler([this](int fd) { this->on_mq_request(fd); });
+  event_loop_.set_bridge_msg_handler([this](int fd) { this->on_bridge_msgs(fd); });
   event_loop_.set_signal_handler([this]() { this->on_signal(); });
   event_loop_.set_socket_handler([this]() { return this->on_socket_request(); });
   // One bridge manager runs per IPC namespace, so its daemon request MQ is per-NS too.
@@ -102,31 +106,48 @@ void PerformanceBridgeManager::start_ros_execution()
   });
 }
 
-void PerformanceBridgeManager::on_mq_request(int fd)
+void PerformanceBridgeManager::on_bridge_msgs(int fd)
 {
-  MqMsgPerformanceBridge msg{};
+  // The kmod's bridge_msg_receiver fd uses datagram semantics: each read(2)
+  // returns exactly one message. The fd was opened O_NONBLOCK, so EAGAIN
+  // means the queue has been fully drained for this wakeup.
+  alignas(MqMsgPerformanceBridge) std::array<uint8_t, MAX_BRIDGE_MSG_SIZE> buf{};
 
-  ssize_t bytes_read = mq_receive(fd, reinterpret_cast<char *>(&msg), sizeof(msg), nullptr);
-  if (bytes_read < 0) {
-    if (errno != EAGAIN) {
-      RCLCPP_WARN_STREAM(
-        logger_, "mq_receive failed for mq_name='" << event_loop_.get_mq_name() << "' (fd=" << fd
-                                                   << "): " << strerror(errno));
+  while (true) {
+    ssize_t n = read(fd, buf.data(), buf.size());
+    if (n < 0) {
+      if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+      if (errno == EINTR) continue;
+      RCLCPP_WARN(logger_, "bridge_msg_receiver read failed (fd=%d): %s", fd, strerror(errno));
+      break;
     }
-    return;
-  }
+    if (n == 0) {
+      // EOF should not happen while the fd is open; treat as drained.
+      break;
+    }
 
-  if (msg.is_service) {
-    create_service_bridge_if_needed(msg.srv_target, msg.direction);
-  } else {
-    std::string topic_name = static_cast<const char *>(msg.pubsub_target.topic_name);
-    topic_local_id_t target_id = msg.pubsub_target.target_id;
-    std::string message_type = static_cast<const char *>(msg.pubsub_target.message_type);
+    if (n != static_cast<ssize_t>(sizeof(MqMsgPerformanceBridge))) {
+      RCLCPP_WARN(
+        logger_, "bridge_msg_receiver: unexpected message size %zd (expected %zu); dropping", n,
+        sizeof(MqMsgPerformanceBridge));
+      continue;
+    }
 
-    request_cache_[topic_name][target_id] = msg;
+    MqMsgPerformanceBridge msg{};
+    std::memcpy(&msg, buf.data(), sizeof(MqMsgPerformanceBridge));
 
-    create_pubsub_bridge_if_needed(
-      topic_name, request_cache_[topic_name], message_type, msg.direction);
+    if (msg.is_service) {
+      create_service_bridge_if_needed(msg.srv_target, msg.direction);
+    } else {
+      std::string topic_name = static_cast<const char *>(msg.pubsub_target.topic_name);
+      topic_local_id_t target_id = msg.pubsub_target.target_id;
+      std::string message_type = static_cast<const char *>(msg.pubsub_target.message_type);
+
+      request_cache_[topic_name][target_id] = msg;
+
+      create_pubsub_bridge_if_needed(
+        topic_name, request_cache_[topic_name], message_type, msg.direction);
+    }
   }
 }
 

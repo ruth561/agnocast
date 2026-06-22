@@ -1,5 +1,6 @@
 #pragma once
 
+#include "agnocast/agnocast_ioctl.hpp"
 #include "agnocast/agnocast_mq.hpp"
 #include "agnocast/agnocast_utils.hpp"
 
@@ -9,6 +10,7 @@
 #include <fcntl.h>
 #include <mqueue.h>
 #include <sys/epoll.h>
+#include <sys/ioctl.h>
 #include <sys/signalfd.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -28,6 +30,8 @@
 namespace agnocast
 {
 
+extern int agnocast_fd;
+
 class IpcEventLoopBase
 {
 public:
@@ -36,8 +40,8 @@ public:
   using SocketCallback = std::function<std::string()>;
 
   IpcEventLoopBase(
-    const rclcpp::Logger & logger, const std::string & mq_name, long mq_msg_size,
-    const std::vector<int> & signals_to_block, const std::vector<int> & signals_to_ignore);
+    const rclcpp::Logger & logger, const std::vector<int> & signals_to_block,
+    const std::vector<int> & signals_to_ignore);
 
   virtual ~IpcEventLoopBase();
 
@@ -46,7 +50,10 @@ public:
 
   bool spin_once(int timeout_ms);
 
-  void set_mq_handler(EventCallback cb);
+  // Sets the callback invoked when the kmod-resident bridge_msg_queue
+  // signals readability (EPOLLIN) on the receiver fd. The callback is
+  // expected to read(2) the receiver fd in a loop until EAGAIN.
+  void set_bridge_msg_handler(EventCallback cb);
   void set_signal_handler(SignalCallback cb);
   void set_socket_handler(SocketCallback cb);
 
@@ -56,8 +63,6 @@ public:
   // Throws on failure.
   void register_aux_mq(
     const std::string & name, long max_messages, long msg_size, EventCallback cb);
-
-  const std::string & get_mq_name() const { return mq_name_; }
 
 protected:
   rclcpp::Logger logger_;
@@ -69,10 +74,8 @@ private:
   int signal_fd_ = -1;
   int socket_fd_ = -1;
 
-  mqd_t mq_fd_ = (mqd_t)-1;
-  std::string mq_name_;
-
-  long mq_msg_size_;
+  // anonymous fd backed by the kmod's per-IPC-ns bridge_msg_queue.
+  int bridge_msg_receiver_fd_ = -1;
 
   // One per `register_aux_mq()` call; matched by fd in `spin_once`.
   struct AuxMq
@@ -85,18 +88,17 @@ private:
   // simpler and faster to scan than a hash map would be at this size.
   std::vector<AuxMq> aux_mqs_;
 
-  EventCallback mq_cb_;
+  EventCallback bridge_msg_cb_;
   SignalCallback signal_cb_;
   SocketCallback socket_cb_;
 
-  void setup_mq();
+  void setup_bridge_msg_receiver();
   void setup_signals(
     const std::vector<int> & signals_to_block, const std::vector<int> & signals_to_ignore);
   void setup_socket();
   void setup_epoll();
   void cleanup_resources();
 
-  mqd_t create_and_open_mq(const std::string & name) const;
   void add_fd_to_epoll(int fd, const std::string & label) const;
 
   static void ignore_signals_impl(const std::vector<int> & signals);
@@ -104,12 +106,12 @@ private:
 };
 
 inline IpcEventLoopBase::IpcEventLoopBase(
-  const rclcpp::Logger & logger, const std::string & mq_name, long mq_msg_size,
-  const std::vector<int> & signals_to_block, const std::vector<int> & signals_to_ignore)
-: logger_(logger), mq_name_(mq_name), mq_msg_size_(mq_msg_size)
+  const rclcpp::Logger & logger, const std::vector<int> & signals_to_block,
+  const std::vector<int> & signals_to_ignore)
+: logger_(logger)
 {
   try {
-    setup_mq();
+    setup_bridge_msg_receiver();
     setup_signals(signals_to_block, signals_to_ignore);
     setup_socket();
     setup_epoll();
@@ -142,9 +144,9 @@ inline bool IpcEventLoopBase::spin_once(int timeout_ms)
   }
   for (int event_index = 0; event_index < event_count; ++event_index) {
     int fd = events[event_index].data.fd;
-    if (fd == mq_fd_) {
-      if (mq_cb_) {
-        mq_cb_(fd);
+    if (fd == bridge_msg_receiver_fd_) {
+      if (bridge_msg_cb_) {
+        bridge_msg_cb_(fd);
       }
     } else if (fd == signal_fd_) {
       struct signalfd_siginfo fdsi
@@ -228,9 +230,9 @@ inline void IpcEventLoopBase::handle_socket(int client_fd)
   }
 }
 
-inline void IpcEventLoopBase::set_mq_handler(EventCallback cb)
+inline void IpcEventLoopBase::set_bridge_msg_handler(EventCallback cb)
 {
-  mq_cb_ = std::move(cb);
+  bridge_msg_cb_ = std::move(cb);
 }
 
 inline void IpcEventLoopBase::set_signal_handler(SignalCallback cb)
@@ -271,9 +273,14 @@ inline void IpcEventLoopBase::register_aux_mq(
   aux_mqs_.push_back(AuxMq{fd, name, std::move(cb)});
 }
 
-inline void IpcEventLoopBase::setup_mq()
+inline void IpcEventLoopBase::setup_bridge_msg_receiver()
 {
-  mq_fd_ = create_and_open_mq(mq_name_);
+  int fd = ioctl(agnocast_fd, AGNOCAST_CREATE_BRIDGE_MSG_RECEIVER_CMD);
+  if (fd < 0) {
+    throw std::system_error(
+      errno, std::generic_category(), "AGNOCAST_CREATE_BRIDGE_MSG_RECEIVER_CMD failed");
+  }
+  bridge_msg_receiver_fd_ = fd;
 }
 
 inline void IpcEventLoopBase::setup_signals(
@@ -356,27 +363,11 @@ inline void IpcEventLoopBase::setup_epoll()
     throw std::runtime_error("epoll_create1 failed: " + std::string(strerror(errno)));
   }
 
-  add_fd_to_epoll(mq_fd_, "MQ");
+  add_fd_to_epoll(bridge_msg_receiver_fd_, "BridgeMsgReceiver");
   add_fd_to_epoll(signal_fd_, "Signal");
   if (socket_fd_ != -1) {
     add_fd_to_epoll(socket_fd_, "Socket");
   }
-}
-
-inline mqd_t IpcEventLoopBase::create_and_open_mq(const std::string & name) const
-{
-  struct mq_attr attr = {};
-  attr.mq_maxmsg = PERFORMANCE_BRIDGE_MQ_MAX_MESSAGES;
-  attr.mq_msgsize = mq_msg_size_;
-
-  mqd_t fd =
-    mq_open(name.c_str(), O_CREAT | O_RDONLY | O_NONBLOCK | O_CLOEXEC, BRIDGE_MQ_PERMS, &attr);
-
-  if (fd == -1) {
-    throw std::system_error(errno, std::generic_category(), "MQ open failed: " + name);
-  }
-
-  return fd;
 }
 
 inline void IpcEventLoopBase::add_fd_to_epoll(int fd, const std::string & label) const
@@ -444,17 +435,11 @@ inline void IpcEventLoopBase::cleanup_resources()
     signal_fd_ = -1;
   }
 
-  if (mq_fd_ != -1) {
-    if (mq_close(mq_fd_) == -1) {
-      RCLCPP_WARN_STREAM(
-        logger_, "Failed to close mq_fd for mq_name='" << mq_name_ << "': " << strerror(errno));
+  if (bridge_msg_receiver_fd_ != -1) {
+    if (close(bridge_msg_receiver_fd_) == -1) {
+      RCLCPP_WARN(logger_, "Failed to close bridge_msg_receiver_fd: %s", strerror(errno));
     }
-    mq_fd_ = -1;
-
-    if (mq_unlink(mq_name_.c_str()) == -1 && errno != ENOENT) {
-      RCLCPP_WARN_STREAM(
-        logger_, "Failed to unlink mq for mq_name='" << mq_name_ << "': " << strerror(errno));
-    }
+    bridge_msg_receiver_fd_ = -1;
   }
 
   for (auto & aux : aux_mqs_) {
