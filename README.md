@@ -198,10 +198,11 @@ If shared memory or message queues are left behind, you can remove them manually
 # Remove leftover shared memory
 rm /dev/shm/agnocast@*
 
-# Remove leftover message queues
+# Remove leftover Agnocast publish/subscribe message queues
 rm /dev/mqueue/agnocast@*
-rm /dev/mqueue/agnocast_bridge_manager@*
 ```
+
+Bridge registration no longer uses POSIX message queues — it now runs over abstract-namespace UNIX domain sockets, which the kernel releases automatically when the bridge_manager process exits. There is nothing under `/dev/mqueue/` to clean up for the bridge side anymore.
 
 If you encounter `mq_open failed: No space left on device`, the system has reached the maximum number of message queues. Run the cleanup commands above, and if the error persists, increase the system-wide `queues_max` limit (e.g., `sudo sysctl -w fs.mqueue.queues_max=1024`). See [System Configuration](https://autowarefoundation.github.io/agnocast_doc/environment-setup/configuration/) for details.
 

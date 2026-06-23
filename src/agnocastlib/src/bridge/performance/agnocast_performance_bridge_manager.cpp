@@ -7,11 +7,12 @@
 #include "agnocast/agnocast_utils.hpp"
 #include "agnocast/bridge/agnocast_bridge_utils.hpp"
 
-#include <mqueue.h>
 #include <sys/prctl.h>
 #include <unistd.h>
 
 #include <algorithm>
+#include <cstddef>
+#include <cstring>
 
 namespace agnocast
 {
@@ -55,13 +56,14 @@ void PerformanceBridgeManager::run()
 
   start_ros_execution();
 
-  event_loop_.set_mq_handler([this](int fd) { this->on_mq_request(fd); });
+  event_loop_.set_message_handler(
+    [this](const void * data, std::size_t size) { this->on_pubsub_bridge_message(data, size); });
   event_loop_.set_signal_handler([this]() { this->on_signal(); });
   event_loop_.set_socket_handler([this]() { return this->on_socket_request(); });
-  // One bridge manager runs per IPC namespace, so its daemon request MQ is per-NS too.
-  event_loop_.register_aux_mq(
-    create_mq_name_for_daemon_bridge(PERFORMANCE_BRIDGE_VIRTUAL_PID), DAEMON_BRIDGE_MQ_MAX_MESSAGES,
-    DAEMON_BRIDGE_MQ_MESSAGE_SIZE, [this](int fd) { this->on_daemon_mq_request(fd); });
+  // One bridge manager runs per IPC namespace, so its daemon request channel is per-NS too.
+  event_loop_.register_aux_listener(
+    create_uds_addr_for_daemon_bridge(PERFORMANCE_BRIDGE_VIRTUAL_PID), DAEMON_BRIDGE_MSG_SIZE,
+    [this](const void * data, std::size_t size) { this->on_daemon_bridge_message(data, size); });
 
   while (!shutdown_requested_) {
     if (!event_loop_.spin_once(EVENT_LOOP_TIMEOUT_MS)) {
@@ -102,19 +104,16 @@ void PerformanceBridgeManager::start_ros_execution()
   });
 }
 
-void PerformanceBridgeManager::on_mq_request(int fd)
+void PerformanceBridgeManager::on_pubsub_bridge_message(const void * data, std::size_t size)
 {
-  MqMsgPerformanceBridge msg{};
-
-  ssize_t bytes_read = mq_receive(fd, reinterpret_cast<char *>(&msg), sizeof(msg), nullptr);
-  if (bytes_read < 0) {
-    if (errno != EAGAIN) {
-      RCLCPP_WARN_STREAM(
-        logger_, "mq_receive failed for mq_name='" << event_loop_.get_mq_name() << "' (fd=" << fd
-                                                   << "): " << strerror(errno));
-    }
+  if (size != sizeof(MqMsgPerformanceBridge)) {
+    RCLCPP_WARN(
+      logger_, "Discarding bridge UDS message with unexpected size %zu (expected %zu)", size,
+      sizeof(MqMsgPerformanceBridge));
     return;
   }
+  MqMsgPerformanceBridge msg{};
+  std::memcpy(&msg, data, sizeof(msg));
 
   if (msg.is_service) {
     create_service_bridge_if_needed(msg.srv_target, msg.direction);
@@ -130,22 +129,17 @@ void PerformanceBridgeManager::on_mq_request(int fd)
   }
 }
 
-void PerformanceBridgeManager::on_daemon_mq_request(int fd)
+void PerformanceBridgeManager::on_daemon_bridge_message(const void * data, std::size_t size)
 {
-  MqMsgDaemonBridge req{};
-  while (!shutdown_requested_) {
-    ssize_t bytes_read = mq_receive(fd, reinterpret_cast<char *>(&req), sizeof(req), nullptr);
-    if (bytes_read < 0) {
-      // EAGAIN just means the queue is drained; anything else is unexpected and
-      // would otherwise silently drop a daemon bridge request.
-      if (errno != EAGAIN) {
-        RCLCPP_WARN_STREAM(
-          logger_, "mq_receive failed for daemon bridge mq (fd=" << fd << "): " << strerror(errno));
-      }
-      break;
-    }
-    register_daemon_pubsub_request(req);
+  if (size != sizeof(MqMsgDaemonBridge)) {
+    RCLCPP_WARN(
+      logger_, "Discarding daemon bridge UDS message with unexpected size %zu (expected %zu)", size,
+      sizeof(MqMsgDaemonBridge));
+    return;
   }
+  MqMsgDaemonBridge req{};
+  std::memcpy(&req, data, sizeof(req));
+  register_daemon_pubsub_request(req);
 }
 
 void PerformanceBridgeManager::register_daemon_pubsub_request(const MqMsgDaemonBridge & req)

@@ -12,10 +12,10 @@ namespace agnocast
 PerformanceBridgeIpcEventLoop::PerformanceBridgeIpcEventLoop(const rclcpp::Logger & logger)
 : IpcEventLoopBase(
     logger,
-    // 1. MQ Name
-    create_mq_name_for_bridge(PERFORMANCE_BRIDGE_VIRTUAL_PID),
-    // 2. Message Size
-    PERFORMANCE_BRIDGE_MQ_MESSAGE_SIZE,
+    // 1. Abstract-namespace UDS address of the bridge_manager listener.
+    create_uds_addr_for_bridge(PERFORMANCE_BRIDGE_VIRTUAL_PID),
+    // 2. Wire-format payload size received per connection.
+    PERFORMANCE_BRIDGE_MSG_SIZE,
     // 3. Block Signals
     {SIGTERM, SIGINT},
     // 4. Ignore Signals

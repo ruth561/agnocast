@@ -75,8 +75,8 @@ private:
 
   void start_ros_execution();
 
-  void on_mq_request(int fd);
-  void on_daemon_mq_request(int fd);
+  void on_pubsub_bridge_message(const void * data, std::size_t size);
+  void on_daemon_bridge_message(const void * data, std::size_t size);
   void on_signal();
   std::string on_socket_request() const;
 

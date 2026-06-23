@@ -109,21 +109,35 @@ uint32_t get_ros_domain_id()
   return static_cast<uint32_t>(value);
 }
 
-std::string create_mq_name_for_bridge(const pid_t pid)
+std::string create_uds_addr_for_bridge(const pid_t pid)
 {
-  std::string name = "/agnocast_bridge_manager@" + std::to_string(pid);
+  // Abstract-namespace UDS addresses start with a NUL byte; the rest is the
+  // name. We embed the NUL explicitly so the returned std::string carries the
+  // correct length when forwarded to bind()/connect().
+  std::string addr;
+  addr.push_back('\0');
+  addr += BRIDGE_UDS_PREFIX;
+  addr += "@";
+  addr += std::to_string(pid);
   if (pid == PERFORMANCE_BRIDGE_VIRTUAL_PID) {
-    name += performance_domain_suffix();
+    addr += performance_domain_suffix();
   }
-  return name;
+  return addr;
 }
 
-std::string create_mq_name_for_daemon_bridge(const pid_t pid)
+std::string create_uds_addr_for_daemon_bridge(const pid_t pid)
 {
+  std::string addr;
+  addr.push_back('\0');
   if (pid == PERFORMANCE_BRIDGE_VIRTUAL_PID) {
-    return std::string(PERFORMANCE_DAEMON_BRIDGE_MQ_NAME) + performance_domain_suffix();
+    addr += PERFORMANCE_DAEMON_BRIDGE_UDS_NAME;
+    addr += performance_domain_suffix();
+  } else {
+    addr += DAEMON_BRIDGE_UDS_PREFIX;
+    addr += "@";
+    addr += std::to_string(pid);
   }
-  return std::string(DAEMON_BRIDGE_MQ_PREFIX) + "@" + std::to_string(pid);
+  return addr;
 }
 
 uint64_t get_self_ipc_ns_inode()

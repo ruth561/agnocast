@@ -54,41 +54,56 @@ TEST(DaemonBridgeMqTest, WireLayoutMatchesDaemonPackFormat)
   EXPECT_EQ(offsetof(MqMsgDaemonBridge, qos_is_reliable), 521u);
 }
 
-TEST(DaemonBridgeMqTest, StandardMqNameIsKeyedByPid)
+TEST(DaemonBridgeMqTest, StandardUdsAddrIsKeyedByPid)
 {
-  EXPECT_EQ(agnocast::create_mq_name_for_daemon_bridge(4242), "/agnocast_daemon_bridge@4242");
+  const auto addr = agnocast::create_uds_addr_for_daemon_bridge(4242);
+  // Abstract-namespace addresses start with a NUL byte.
+  ASSERT_FALSE(addr.empty());
+  EXPECT_EQ(addr[0], '\0');
+  EXPECT_EQ(addr.substr(1), "agnocast_daemon_bridge@4242");
 }
 
-TEST(DaemonBridgeMqTest, PerformanceMqNameIsPerNamespace)
+TEST(DaemonBridgeMqTest, PerformanceUdsAddrIsPerNamespace)
 {
   const ScopedRosDomainId guard;
   unsetenv("ROS_DOMAIN_ID");
-  EXPECT_EQ(
-    agnocast::create_mq_name_for_daemon_bridge(agnocast::PERFORMANCE_BRIDGE_VIRTUAL_PID),
-    "/agnocast_daemon_bridge_perf");
+  const auto addr =
+    agnocast::create_uds_addr_for_daemon_bridge(agnocast::PERFORMANCE_BRIDGE_VIRTUAL_PID);
+  ASSERT_FALSE(addr.empty());
+  EXPECT_EQ(addr[0], '\0');
+  EXPECT_EQ(addr.substr(1), "agnocast_daemon_bridge_perf");
 }
 
-TEST(DaemonBridgeMqTest, PerformanceMqNameAppendsDomainId)
+TEST(DaemonBridgeMqTest, PerformanceUdsAddrAppendsDomainId)
 {
   const ScopedRosDomainId guard;
   setenv("ROS_DOMAIN_ID", "7", 1);
-  EXPECT_EQ(
-    agnocast::create_mq_name_for_daemon_bridge(agnocast::PERFORMANCE_BRIDGE_VIRTUAL_PID),
-    "/agnocast_daemon_bridge_perf_d7");
+  const auto addr =
+    agnocast::create_uds_addr_for_daemon_bridge(agnocast::PERFORMANCE_BRIDGE_VIRTUAL_PID);
+  ASSERT_FALSE(addr.empty());
+  EXPECT_EQ(addr[0], '\0');
+  EXPECT_EQ(addr.substr(1), "agnocast_daemon_bridge_perf_d7");
 }
 
 // An empty ROS_DOMAIN_ID (set but "") means "no domain": no `_d` suffix. Both
 // name builders must agree on this and with the Python agent.
-TEST(DaemonBridgeMqTest, PerformanceMqNameEmptyDomainIdHasNoSuffix)
+TEST(DaemonBridgeMqTest, PerformanceUdsAddrEmptyDomainIdHasNoSuffix)
 {
   const ScopedRosDomainId guard;
   setenv("ROS_DOMAIN_ID", "", 1);
+  const auto daemon_addr =
+    agnocast::create_uds_addr_for_daemon_bridge(agnocast::PERFORMANCE_BRIDGE_VIRTUAL_PID);
+  ASSERT_FALSE(daemon_addr.empty());
+  EXPECT_EQ(daemon_addr[0], '\0');
+  EXPECT_EQ(daemon_addr.substr(1), "agnocast_daemon_bridge_perf");
+
+  const auto bridge_addr =
+    agnocast::create_uds_addr_for_bridge(agnocast::PERFORMANCE_BRIDGE_VIRTUAL_PID);
+  ASSERT_FALSE(bridge_addr.empty());
+  EXPECT_EQ(bridge_addr[0], '\0');
   EXPECT_EQ(
-    agnocast::create_mq_name_for_daemon_bridge(agnocast::PERFORMANCE_BRIDGE_VIRTUAL_PID),
-    "/agnocast_daemon_bridge_perf");
-  EXPECT_EQ(
-    agnocast::create_mq_name_for_bridge(agnocast::PERFORMANCE_BRIDGE_VIRTUAL_PID),
-    "/agnocast_bridge_manager@" + std::to_string(agnocast::PERFORMANCE_BRIDGE_VIRTUAL_PID));
+    bridge_addr.substr(1),
+    "agnocast_bridge_manager@" + std::to_string(agnocast::PERFORMANCE_BRIDGE_VIRTUAL_PID));
 }
 
 // Performance-mode daemon bridges have no local endpoint to query, so the QoS

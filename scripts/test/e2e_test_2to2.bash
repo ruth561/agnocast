@@ -87,9 +87,15 @@ if [ "$LOWER_BRIDGE_MODE" != "off" ] && [ "$LOWER_BRIDGE_MODE" != "0" ]; then
     fi
 
     sleep 1
-    # Verify stale bridge manager mqueue does not remain.
-    if [ -e "/dev/mqueue/agnocast_bridge_manager@-1" ]; then
-        echo "ERROR: stale mqueue exists: /dev/mqueue/agnocast_bridge_manager@-1" | sudo tee /dev/kmsg
+    # Verify the bridge_manager's abstract-namespace UDS listener is gone. The
+    # kernel releases the address when the owning fd is closed, so a stale
+    # entry in /proc/net/unix after we killed every agno_pbr_* would indicate
+    # a leaked listener.
+    STALE_UDS=$(awk '
+        $NF ~ /^@agnocast_bridge_manager@-1(_d[0-9]+)?$/ { print $NF; exit }
+    ' /proc/net/unix)
+    if [ -n "$STALE_UDS" ]; then
+        echo "ERROR: stale bridge UDS listener exists: $STALE_UDS" | sudo tee /dev/kmsg
         exit 1
     fi
 fi

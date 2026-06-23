@@ -172,13 +172,15 @@ def test_serialize_packs_direction_qos_at_expected_offsets():
     assert (direction, depth, transient, reliable) == (DIRECTION_ROS2_TO_AGNOCAST, 7, 1, 1)
 
 
-def test_dispatch_targets_per_namespace_mq(monkeypatch):
+def test_dispatch_targets_per_namespace_uds(monkeypatch):
     from ros2agnocast_discovery_agent import bridge_decider as bd
     sent = []
-    monkeypatch.setattr(bd, 'send_request', lambda mq, payload: sent.append(mq) or None)
+    monkeypatch.setattr(bd, 'send_request', lambda addr, payload: sent.append(addr) or None)
 
     req = BridgeRequest('/x', 'T', DIRECTION_AGNOCAST_TO_ROS2, 1, False, True)
     dispatch_requests([req])
 
-    assert all(name.startswith('/agnocast_daemon_bridge_perf') for name in sent)
+    # Abstract-namespace UDS addresses start with NUL; the rest mirrors the
+    # bridge_manager's bind() target.
     assert len(sent) == 1
+    assert sent[0].startswith('\x00agnocast_daemon_bridge_perf')

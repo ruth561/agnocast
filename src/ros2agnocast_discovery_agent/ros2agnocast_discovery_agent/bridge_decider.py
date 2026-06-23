@@ -9,15 +9,16 @@ so the two reach each other through ROS 2 (DDS):
   * local subscriber + remote publisher  -> R2A bridge (reinject from DDS)
 
 The request is sent as ``MqMsgDaemonBridge`` to the per-namespace bridge_manager
-MQ. The struct layout is mirrored here so the daemon stays decoupled from
-libagnocast's C++ headers; ``agnocast_mq.hpp`` owns the source of truth and a
-test asserts the size stays in sync.
+over an abstract-namespace UNIX domain socket. The struct layout is mirrored
+here so the daemon stays decoupled from libagnocast's C++ headers;
+``agnocast_mq.hpp`` owns the source of truth and a test asserts the size stays
+in sync.
 """
 
-import ctypes
 from dataclasses import dataclass
 import errno
 import os
+import socket
 import struct
 from typing import Iterable, Optional
 
@@ -32,26 +33,9 @@ _MSG_PACK_FORMAT = '=256s256sIIBB2x'
 DIRECTION_ROS2_TO_AGNOCAST = 0
 DIRECTION_AGNOCAST_TO_ROS2 = 1
 
-# One bridge_manager per IPC namespace listens on this MQ.
-_PERFORMANCE_MQ_NAME = '/agnocast_daemon_bridge_perf'
-
-# librt mq_* loaded lazily to keep the daemon's deps at "rclpy + stdlib".
-_librt = None
-
-
-def _load_librt():
-    global _librt
-    if _librt is not None:
-        return _librt
-    lib = ctypes.CDLL('librt.so.1', use_errno=True)
-    lib.mq_open.argtypes = [ctypes.c_char_p, ctypes.c_int]
-    lib.mq_open.restype = ctypes.c_int
-    lib.mq_send.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_uint]
-    lib.mq_send.restype = ctypes.c_int
-    lib.mq_close.argtypes = [ctypes.c_int]
-    lib.mq_close.restype = ctypes.c_int
-    _librt = lib
-    return _librt
+# One bridge_manager per IPC namespace listens on this abstract-namespace UDS.
+# Mirrors ``PERFORMANCE_DAEMON_BRIDGE_UDS_NAME`` in ``agnocast_mq.hpp``.
+_PERFORMANCE_UDS_NAME = 'agnocast_daemon_bridge_perf'
 
 
 @dataclass(frozen=True)
@@ -148,47 +132,60 @@ def decide_bridges(local_state, remote_states) -> list:
     return list(requests.values())
 
 
-def _performance_mq_name() -> str:
-    name = _PERFORMANCE_MQ_NAME
+def _performance_uds_addr() -> str:
+    """Return the abstract-namespace UDS address the bridge_manager listens on.
+
+    Python's socket module treats addresses starting with ``\\x00`` as
+    abstract, mirroring the C++ side's ``\\0agnocast_daemon_bridge_perf...``.
+    """
+    name = _PERFORMANCE_UDS_NAME
     domain_id = os.environ.get('ROS_DOMAIN_ID')
     if domain_id:
         name += '_d' + domain_id
-    return name
+    return '\x00' + name
 
 
-def send_request(mq_name: str, payload: bytes) -> Optional[str]:
-    """Send ``payload`` to ``mq_name``; return an error string or None.
+def send_request(uds_addr: str, payload: bytes) -> Optional[str]:
+    """Send ``payload`` to ``uds_addr`` as a single datagram; return an error or None.
 
-    O_NONBLOCK keeps a full or absent queue from stalling the daemon: the
-    request is re-issued idempotently next tick.
+    The bridge_manager binds the abstract-namespace UDS only after it starts,
+    so ``ECONNREFUSED`` is silently absorbed: the request is re-issued
+    idempotently next tick. ``EAGAIN`` (receiver buffer momentarily full) is
+    likewise absorbed because the request is idempotent. Everything else is
+    reported so misconfigurations don't go silent.
     """
-    lib = _load_librt()
-    fd = lib.mq_open(mq_name.encode('utf-8'), os.O_WRONLY | os.O_NONBLOCK)
-    if fd == -1:
-        err = ctypes.get_errno()
-        if err == errno.ENOENT:
-            return None
-        return f'mq_open({mq_name}): {os.strerror(err)}'
+    # SOCK_DGRAM: no connect()/accept() handshake; sendto() either delivers
+    # the whole payload atomically or fails. Non-blocking so the daemon's
+    # tick loop is never stalled by a slow consumer.
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    sock.setblocking(False)
     try:
-        if lib.mq_send(fd, payload, len(payload), 0) == -1:
-            err = ctypes.get_errno()
-            if err == errno.EAGAIN:
+        try:
+            sock.sendto(payload, uds_addr)
+        except (ConnectionRefusedError, FileNotFoundError):
+            # bridge_manager not yet up; the daemon will retry next tick.
+            return None
+        except BlockingIOError:
+            # Receiver buffer full; the daemon will retry next tick.
+            return None
+        except OSError as e:
+            if e.errno in (errno.ENOENT, errno.ENOBUFS):
                 return None
-            return f'mq_send({mq_name}): {os.strerror(err)}'
+            return f'sendto({uds_addr!r}): {os.strerror(e.errno) if e.errno else str(e)}'
     finally:
-        lib.mq_close(fd)
+        sock.close()
     return None
 
 
 def dispatch_requests(requests: Iterable[BridgeRequest], logger=None) -> None:
-    """Deliver each request to the per-namespace bridge_manager MQ.
+    """Deliver each request to the per-namespace bridge_manager UDS.
 
-    The MQ is absent until a bridge_manager is up; ``send_request`` skips
-    ENOENT/EAGAIN so a missing or full queue never stalls the daemon, and the
-    request is re-issued idempotently next tick.
+    The listener is absent until a bridge_manager is up; ``send_request``
+    swallows ECONNREFUSED/ENOENT so a missing peer never stalls the daemon, and
+    the request is re-issued idempotently next tick.
     """
-    perf_mq = _performance_mq_name()
+    addr = _performance_uds_addr()
     for req in requests:
-        err = send_request(perf_mq, serialize_request(req))
+        err = send_request(addr, serialize_request(req))
         if err is not None and logger is not None:
             logger.warn('daemon bridge dispatch failed: %s', err)

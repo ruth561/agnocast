@@ -67,19 +67,21 @@ struct MqMsgDaemonBridge
   bool qos_is_reliable;
 };
 
-constexpr int64_t PERFORMANCE_BRIDGE_MQ_MAX_MESSAGES = 256;
-// The discovery agent bursts one request per (cross-NS topic, direction) each tick,
-// so a shallow queue would throttle startup convergence to a few bridges per second.
-// The bridge_manager already opens the 256-deep performance MQ, so matching it needs
-// no extra fs.mqueue.msg_max headroom.
-constexpr int64_t DAEMON_BRIDGE_MQ_MAX_MESSAGES = 256;
-constexpr int64_t PERFORMANCE_BRIDGE_MQ_MESSAGE_SIZE = sizeof(MqMsgPerformanceBridge);
-constexpr int64_t DAEMON_BRIDGE_MQ_MESSAGE_SIZE = sizeof(MqMsgDaemonBridge);
-constexpr mode_t BRIDGE_MQ_PERMS = 0600;
+// Wire-format payload sizes used over the abstract-namespace UDS transport.
+constexpr int64_t PERFORMANCE_BRIDGE_MSG_SIZE = sizeof(MqMsgPerformanceBridge);
+constexpr int64_t DAEMON_BRIDGE_MSG_SIZE = sizeof(MqMsgDaemonBridge);
 
-// Standard mode: one MQ per user process, `/agnocast_daemon_bridge@<pid>`.
-// Performance mode: one MQ per IPC namespace, `/agnocast_daemon_bridge_perf`.
-inline constexpr const char * DAEMON_BRIDGE_MQ_PREFIX = "/agnocast_daemon_bridge";
-inline constexpr const char * PERFORMANCE_DAEMON_BRIDGE_MQ_NAME = "/agnocast_daemon_bridge_perf";
+// Abstract-namespace UDS addresses (sun_path[0] == '\0', rest is the name).
+// Scope is the network namespace; one bridge_manager per IPC namespace listens
+// on each address. The optional `_d<ROS_DOMAIN_ID>` suffix mirrors the old MQ
+// naming convention.
+//
+// Standard mode: one address per user process,
+//   `\0agnocast_daemon_bridge@<pid>`.
+// Performance mode: one address per IPC namespace,
+//   `\0agnocast_daemon_bridge_perf{_d<DOMAIN>}`.
+inline constexpr const char * BRIDGE_UDS_PREFIX = "agnocast_bridge_manager";
+inline constexpr const char * DAEMON_BRIDGE_UDS_PREFIX = "agnocast_daemon_bridge";
+inline constexpr const char * PERFORMANCE_DAEMON_BRIDGE_UDS_NAME = "agnocast_daemon_bridge_perf";
 
 }  // namespace agnocast
