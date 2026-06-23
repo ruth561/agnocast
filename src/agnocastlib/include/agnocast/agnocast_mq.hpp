@@ -25,15 +25,26 @@ struct MqMsgROS2Publish
   bool should_terminate;
 };
 
-struct PubsubBridgeTargetInfoWithType
+// Discriminator tag for BridgeMsg.
+enum class BridgeMsgType : uint32_t {
+  PubSub = 0,
+  Service = 1,
+  Daemon = 2,
+};
+
+// Payload for BridgeMsgType::PubSub.
+struct BridgeMsgPubSubPayload
 {
+  BridgeDirection direction;
   char message_type[MESSAGE_TYPE_BUFFER_SIZE];
   char topic_name[TOPIC_NAME_BUFFER_SIZE];
   topic_local_id_t target_id;
 };
 
-struct ServiceBridgeTargetInfoWithType
+// Payload for BridgeMsgType::Service.
+struct BridgeMsgServicePayload
 {
+  BridgeDirection direction;
   char service_type[SERVICE_TYPE_BUFFER_SIZE];
   char service_name[SERVICE_NAME_BUFFER_SIZE];
   bool create_shadow_node;
@@ -41,23 +52,14 @@ struct ServiceBridgeTargetInfoWithType
   char shadow_node_name[NODE_NAME_BUFFER_SIZE];
 };
 
-struct MqMsgPerformanceBridge
-{
-  union {
-    PubsubBridgeTargetInfoWithType pubsub_target;
-    ServiceBridgeTargetInfoWithType srv_target;
-  };
-  BridgeDirection direction;
-  bool is_service;
-};
-
+// Payload for BridgeMsgType::Daemon.
 // Cross-IPC-namespace bridge request from the per-NS daemon to a same-NS
 // bridge_manager. The daemon holds no process-local factory pointers, so it
-// names the target by topic (standard mode reuses the factory the manager
-// already cached from this process's intra-NS requests) and by type
-// (performance mode resolves a plugin). QoS is sent explicitly since the
+// names the target by topic and type. QoS is sent explicitly since the
 // bridge_manager cannot query the originating endpoint's QoS on its own.
-struct MqMsgDaemonBridge
+// Wire layout (524 bytes) is mirrored in bridge_decider.py; the unit test
+// asserts it stays in sync.
+struct BridgeMsgDaemonPayload
 {
   char topic_name[TOPIC_NAME_BUFFER_SIZE];
   char type_name[MESSAGE_TYPE_BUFFER_SIZE];
@@ -67,19 +69,34 @@ struct MqMsgDaemonBridge
   bool qos_is_reliable;
 };
 
-constexpr int64_t PERFORMANCE_BRIDGE_MQ_MAX_MESSAGES = 256;
-// The discovery agent bursts one request per (cross-NS topic, direction) each tick,
-// so a shallow queue would throttle startup convergence to a few bridges per second.
-// The bridge_manager already opens the 256-deep performance MQ, so matching it needs
-// no extra fs.mqueue.msg_max headroom.
-constexpr int64_t DAEMON_BRIDGE_MQ_MAX_MESSAGES = 256;
-constexpr int64_t PERFORMANCE_BRIDGE_MQ_MESSAGE_SIZE = sizeof(MqMsgPerformanceBridge);
-constexpr int64_t DAEMON_BRIDGE_MQ_MESSAGE_SIZE = sizeof(MqMsgDaemonBridge);
+// Unified bridge message. All bridge endpoints (intra-NS subscribers, publishers,
+// service servers) and the per-NS discovery daemon write to the single
+// bridge_manager MQ using this type. Senders transmit only the bytes for the
+// active payload (offsetof(BridgeMsg, payload) + sizeof(active_variant)); the
+// receiver opens the MQ with sizeof(BridgeMsg) as mq_msgsize so any variant
+// fits. All payload members share 4-byte alignment so the union itself is
+// 4-byte aligned and `type` sits at offset 0 with no padding before `payload`.
+struct BridgeMsg
+{
+  BridgeMsgType type;
+  union Payload {
+    BridgeMsgPubSubPayload pubsub;
+    BridgeMsgServicePayload service;
+    BridgeMsgDaemonPayload daemon;
+  } payload;
+};
+
+constexpr int64_t BRIDGE_MQ_MAX_MESSAGES = 256;
+constexpr int64_t BRIDGE_MQ_MESSAGE_SIZE = sizeof(BridgeMsg);
 constexpr mode_t BRIDGE_MQ_PERMS = 0600;
 
-// Standard mode: one MQ per user process, `/agnocast_daemon_bridge@<pid>`.
-// Performance mode: one MQ per IPC namespace, `/agnocast_daemon_bridge_perf`.
-inline constexpr const char * DAEMON_BRIDGE_MQ_PREFIX = "/agnocast_daemon_bridge";
-inline constexpr const char * PERFORMANCE_DAEMON_BRIDGE_MQ_NAME = "/agnocast_daemon_bridge_perf";
+// Wire size of a BridgeMsg carrying a specific payload variant: the tag plus
+// just the active variant's bytes. Used both for `mq_send` and for sizing
+// auxiliary buffers.
+template <typename PayloadT>
+constexpr size_t bridge_msg_wire_size()
+{
+  return offsetof(BridgeMsg, payload) + sizeof(PayloadT);
+}
 
 }  // namespace agnocast

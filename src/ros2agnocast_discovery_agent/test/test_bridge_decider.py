@@ -2,7 +2,8 @@
 
 These need neither the kmod, DDS, nor a POSIX MQ: ``decide_bridges`` is pure
 logic, and the wire format is checked against the hand-built byte layout that
-mirrors ``sizeof(MqMsgDaemonBridge) == 524`` in ``agnocast_mq.hpp``.
+mirrors a Daemon-variant ``BridgeMsg`` (4-byte tag + 524-byte payload = 528
+bytes) in ``agnocast_mq.hpp``.
 """
 
 import struct
@@ -156,19 +157,23 @@ def test_decide_collapses_duplicates_across_remotes():
 def test_serialize_matches_cpp_struct_size():
     req = BridgeRequest('/x', 'std_msgs/msg/Int32', DIRECTION_AGNOCAST_TO_ROS2,
                         10, False, True)
-    assert len(serialize_request(req)) == 524
+    assert len(serialize_request(req)) == 528
 
 
 def test_serialize_nul_terminates_truncated_topic():
     req = BridgeRequest('/' + 'a' * 1000, 'T', DIRECTION_AGNOCAST_TO_ROS2, 10, False, True)
-    assert serialize_request(req)[255] == 0
+    # topic_name starts at offset 4 (after uint32 type tag); last byte is at 4 + 255 = 259.
+    assert serialize_request(req)[259] == 0
 
 
 def test_serialize_packs_direction_qos_at_expected_offsets():
     req = BridgeRequest('/x', 'T', DIRECTION_ROS2_TO_AGNOCAST, 7, True, True)
     payload = serialize_request(req)
-    direction, depth = struct.unpack_from('=II', payload, 512)
-    transient, reliable = struct.unpack_from('=BB', payload, 520)
+    # BridgeMsgDaemonPayload starts at offset 4 (after uint32 type tag).
+    # direction at data[512] = payload[516], qos_depth at data[516] = payload[520].
+    direction, depth = struct.unpack_from('=II', payload, 516)
+    # qos_is_transient_local at data[520] = payload[524], qos_is_reliable at data[521] = payload[525].
+    transient, reliable = struct.unpack_from('=BB', payload, 524)
     assert (direction, depth, transient, reliable) == (DIRECTION_ROS2_TO_AGNOCAST, 7, 1, 1)
 
 
@@ -180,5 +185,5 @@ def test_dispatch_targets_per_namespace_mq(monkeypatch):
     req = BridgeRequest('/x', 'T', DIRECTION_AGNOCAST_TO_ROS2, 1, False, True)
     dispatch_requests([req])
 
-    assert all(name.startswith('/agnocast_daemon_bridge_perf') for name in sent)
+    assert all(name.startswith('/agnocast_bridge_manager@-1') for name in sent)
     assert len(sent) == 1

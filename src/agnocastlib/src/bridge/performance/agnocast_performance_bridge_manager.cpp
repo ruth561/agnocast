@@ -58,10 +58,6 @@ void PerformanceBridgeManager::run()
   event_loop_.set_mq_handler([this](int fd) { this->on_mq_request(fd); });
   event_loop_.set_signal_handler([this]() { this->on_signal(); });
   event_loop_.set_socket_handler([this]() { return this->on_socket_request(); });
-  // One bridge manager runs per IPC namespace, so its daemon request MQ is per-NS too.
-  event_loop_.register_aux_mq(
-    create_mq_name_for_daemon_bridge(PERFORMANCE_BRIDGE_VIRTUAL_PID), DAEMON_BRIDGE_MQ_MAX_MESSAGES,
-    DAEMON_BRIDGE_MQ_MESSAGE_SIZE, [this](int fd) { this->on_daemon_mq_request(fd); });
 
   while (!shutdown_requested_) {
     if (!event_loop_.spin_once(EVENT_LOOP_TIMEOUT_MS)) {
@@ -104,7 +100,7 @@ void PerformanceBridgeManager::start_ros_execution()
 
 void PerformanceBridgeManager::on_mq_request(int fd)
 {
-  MqMsgPerformanceBridge msg{};
+  BridgeMsg msg{};
 
   ssize_t bytes_read = mq_receive(fd, reinterpret_cast<char *>(&msg), sizeof(msg), nullptr);
   if (bytes_read < 0) {
@@ -116,39 +112,36 @@ void PerformanceBridgeManager::on_mq_request(int fd)
     return;
   }
 
-  if (msg.is_service) {
-    create_service_bridge_if_needed(msg.srv_target, msg.direction);
-  } else {
-    std::string topic_name = static_cast<const char *>(msg.pubsub_target.topic_name);
-    topic_local_id_t target_id = msg.pubsub_target.target_id;
-    std::string message_type = static_cast<const char *>(msg.pubsub_target.message_type);
+  switch (msg.type) {
+    case BridgeMsgType::PubSub: {
+      const auto & payload = msg.payload.pubsub;
+      std::string topic_name = static_cast<const char *>(payload.topic_name);
+      topic_local_id_t target_id = payload.target_id;
+      std::string message_type = static_cast<const char *>(payload.message_type);
 
-    request_cache_[topic_name][target_id] = msg;
+      request_cache_[topic_name][target_id] = payload;
 
-    create_pubsub_bridge_if_needed(
-      topic_name, request_cache_[topic_name], message_type, msg.direction);
-  }
-}
-
-void PerformanceBridgeManager::on_daemon_mq_request(int fd)
-{
-  MqMsgDaemonBridge req{};
-  while (!shutdown_requested_) {
-    ssize_t bytes_read = mq_receive(fd, reinterpret_cast<char *>(&req), sizeof(req), nullptr);
-    if (bytes_read < 0) {
-      // EAGAIN just means the queue is drained; anything else is unexpected and
-      // would otherwise silently drop a daemon bridge request.
-      if (errno != EAGAIN) {
-        RCLCPP_WARN_STREAM(
-          logger_, "mq_receive failed for daemon bridge mq (fd=" << fd << "): " << strerror(errno));
-      }
+      create_pubsub_bridge_if_needed(
+        topic_name, request_cache_[topic_name], message_type, payload.direction);
       break;
     }
-    register_daemon_pubsub_request(req);
+    case BridgeMsgType::Service: {
+      const auto & payload = msg.payload.service;
+      create_service_bridge_if_needed(payload, payload.direction);
+      break;
+    }
+    case BridgeMsgType::Daemon: {
+      register_daemon_pubsub_request(msg.payload.daemon);
+      break;
+    }
+    default:
+      RCLCPP_WARN(
+        logger_, "Received bridge message with unknown type: %u", static_cast<uint32_t>(msg.type));
+      break;
   }
 }
 
-void PerformanceBridgeManager::register_daemon_pubsub_request(const MqMsgDaemonBridge & req)
+void PerformanceBridgeManager::register_daemon_pubsub_request(const BridgeMsgDaemonPayload & req)
 {
   const std::string topic_name = static_cast<const char *>(req.topic_name);
   const std::string message_type = static_cast<const char *>(req.type_name);
@@ -260,7 +253,7 @@ void PerformanceBridgeManager::check_and_create_pubsub_bridges()
     }
 
     const std::string message_type =
-      static_cast<const char *>(requests.begin()->second.pubsub_target.message_type);
+      static_cast<const char *>(requests.begin()->second.message_type);
 
     create_pubsub_bridge_if_needed(
       topic_name, requests, message_type, BridgeDirection::ROS2_TO_AGNOCAST);
@@ -484,7 +477,7 @@ void PerformanceBridgeManager::create_pubsub_bridge_if_needed(
 }
 
 void PerformanceBridgeManager::create_service_bridge_if_needed(
-  const ServiceBridgeTargetInfoWithType & target, BridgeDirection direction)
+  const BridgeMsgServicePayload & target, BridgeDirection direction)
 {
   std::string service_name = static_cast<const char *>(target.service_name);
   std::string service_type = static_cast<const char *>(target.service_type);

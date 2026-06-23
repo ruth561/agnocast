@@ -118,14 +118,6 @@ std::string create_mq_name_for_bridge(const pid_t pid)
   return name;
 }
 
-std::string create_mq_name_for_daemon_bridge(const pid_t pid)
-{
-  if (pid == PERFORMANCE_BRIDGE_VIRTUAL_PID) {
-    return std::string(PERFORMANCE_DAEMON_BRIDGE_MQ_NAME) + performance_domain_suffix();
-  }
-  return std::string(DAEMON_BRIDGE_MQ_PREFIX) + "@" + std::to_string(pid);
-}
-
 uint64_t get_self_ipc_ns_inode()
 {
   struct stat st

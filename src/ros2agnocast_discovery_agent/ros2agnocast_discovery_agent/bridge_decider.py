@@ -8,8 +8,9 @@ so the two reach each other through ROS 2 (DDS):
   * local publisher  + remote subscriber -> A2R bridge (publish to DDS)
   * local subscriber + remote publisher  -> R2A bridge (reinject from DDS)
 
-The request is sent as ``MqMsgDaemonBridge`` to the per-namespace bridge_manager
-MQ. The struct layout is mirrored here so the daemon stays decoupled from
+The request is sent as a ``BridgeMsg`` (type=Daemon) to the per-namespace
+bridge_manager MQ (``/agnocast_bridge_manager@-1[_d<domain>]``).
+The struct layout is mirrored here so the daemon stays decoupled from
 libagnocast's C++ headers; ``agnocast_mq.hpp`` owns the source of truth and a
 test asserts the size stays in sync.
 """
@@ -24,16 +25,33 @@ from typing import Iterable, Optional
 TOPIC_NAME_BUFFER_SIZE = 256
 MESSAGE_TYPE_BUFFER_SIZE = 256
 
-# char topic_name[256]; char type_name[256]; uint32 direction; uint32 qos_depth;
-# bool qos_is_transient_local; bool qos_is_reliable; + 2 bytes tail padding so
-# the total matches sizeof(MqMsgDaemonBridge) == 524 on the C++ side.
-_MSG_PACK_FORMAT = '=256s256sIIBB2x'
+# BridgeMsgType::Daemon discriminator value (matches the C++ enum).
+_BRIDGE_MSG_TYPE_DAEMON = 2
+
+# BridgeMsg wire format for a Daemon-variant message (528 bytes total). The
+# C++ BridgeMsg is `uint32_t type` + union { pubsub | service | daemon }. All
+# payload variants are 4-byte aligned so no padding precedes the union. Senders
+# transmit only the bytes for the active variant, so a Daemon message is
+# 4 (tag) + 524 (BridgeMsgDaemonPayload) = 528 bytes.
+#
+#   uint32 type                             [0..3]   = _BRIDGE_MSG_TYPE_DAEMON
+#   BridgeMsgDaemonPayload at union offset 4..527:
+#     char[256] topic_name                  [4..259]
+#     char[256] type_name                   [260..515]
+#     uint32    direction                   [516..519]
+#     uint32    qos_depth                   [520..523]
+#     bool      qos_is_transient_local      [524]
+#     bool      qos_is_reliable             [525]
+#     2 bytes   padding                     [526..527]
+#
+# Must stay in sync with bridge_msg_wire_size<BridgeMsgDaemonPayload>() == 528.
+_MSG_PACK_FORMAT = '=I256s256sIIBB2x'
 
 DIRECTION_ROS2_TO_AGNOCAST = 0
 DIRECTION_AGNOCAST_TO_ROS2 = 1
 
-# One bridge_manager per IPC namespace listens on this MQ.
-_PERFORMANCE_MQ_NAME = '/agnocast_daemon_bridge_perf'
+# One bridge_manager per IPC namespace listens on this MQ (PERFORMANCE_BRIDGE_VIRTUAL_PID = -1).
+_BRIDGE_MQ_BASE = '/agnocast_bridge_manager@-1'
 
 # librt mq_* loaded lazily to keep the daemon's deps at "rclpy + stdlib".
 _librt = None
@@ -69,6 +87,7 @@ def serialize_request(req: BridgeRequest) -> bytes:
     type_name = req.type_name.encode('utf-8')[: MESSAGE_TYPE_BUFFER_SIZE - 1]
     return struct.pack(
         _MSG_PACK_FORMAT,
+        _BRIDGE_MSG_TYPE_DAEMON,
         topic,
         type_name,
         req.direction,
@@ -148,8 +167,8 @@ def decide_bridges(local_state, remote_states) -> list:
     return list(requests.values())
 
 
-def _performance_mq_name() -> str:
-    name = _PERFORMANCE_MQ_NAME
+def _bridge_mq_name() -> str:
+    name = _BRIDGE_MQ_BASE
     domain_id = os.environ.get('ROS_DOMAIN_ID')
     if domain_id:
         name += '_d' + domain_id
@@ -187,7 +206,7 @@ def dispatch_requests(requests: Iterable[BridgeRequest], logger=None) -> None:
     ENOENT/EAGAIN so a missing or full queue never stalls the daemon, and the
     request is re-issued idempotently next tick.
     """
-    perf_mq = _performance_mq_name()
+    perf_mq = _bridge_mq_name()
     for req in requests:
         err = send_request(perf_mq, serialize_request(req))
         if err is not None and logger is not None:
