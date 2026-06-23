@@ -1,0 +1,28 @@
+<launch>
+    <!--
+      Benchmark for bridge registration startup latency — one N value per launch.
+
+      Run the script scripts/sample_application/run_bridge_startup_perf.bash to
+      sweep over multiple N values automatically.
+
+      Args:
+        num_topics  : number of topics to create (default 10)
+        no_header   : set to "true" to suppress the table header (default false)
+
+      Example:
+        ros2 launch agnocast_sample_application bridge_startup_perf.launch.xml num_topics:=50
+    -->
+    <arg name="num_topics" default="10"/>
+    <arg name="no_header"  default="false"/>
+
+    <arg name="discovery_agent" default="false"/>
+    <include file="$(find-pkg-share ros2agnocast_discovery_agent)/launch/discovery_agent.launch.xml"
+             if="$(var discovery_agent)"/>
+
+    <node pkg="agnocast_sample_application" exec="bridge_startup_perf"
+          name="bridge_startup_perf_node" output="screen"
+          args="$(var num_topics) $(if $(var no_header) --no-header '')">
+        <env name="LD_PRELOAD" value="libagnocast_heaphook.so:$(env LD_PRELOAD '')" />
+        <env name="AGNOCAST_BRIDGE_MODE" value="on" />
+    </node>
+</launch>

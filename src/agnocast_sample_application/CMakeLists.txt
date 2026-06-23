@@ -104,6 +104,12 @@ target_include_directories(sim_time_timer PRIVATE
   ${agnocastlib_INCLUDE_DIRS}
 )
 
+add_executable(bridge_startup_perf src/bridge_startup_perf.cpp)
+ament_target_dependencies(bridge_startup_perf rclcpp agnocastlib agnocast_sample_interfaces)
+target_include_directories(bridge_startup_perf PRIVATE
+  ${agnocastlib_INCLUDE_DIRS}
+)
+
 add_library(agnocast_listener_component SHARED src/minimal_subscriber.cpp)
 ament_target_dependencies(agnocast_listener_component rclcpp rclcpp_components agnocastlib agnocast_sample_interfaces)
 target_include_directories(agnocast_listener_component PRIVATE ${agnocastlib_INCLUDE_DIRS})
@@ -190,6 +196,9 @@ install(TARGETS no_rclcpp_client
   DESTINATION lib/${PROJECT_NAME})
 
 install(TARGETS sim_time_timer
+  DESTINATION lib/${PROJECT_NAME})
+
+install(TARGETS bridge_startup_perf
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY launch
