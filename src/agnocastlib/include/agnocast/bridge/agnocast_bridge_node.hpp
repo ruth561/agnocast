@@ -98,6 +98,8 @@ struct AgnocastToRosPubsubRegistrationPolicy
 
 // Policy for agnocast::Service.
 // Registers a bridge that forwards requests from ROS 2 to Agnocast (R2A).
+// NodeT is needed so the shadow_node_identity payload can differ between
+// rclcpp::Node and agnocast::Node.
 struct RosToAgnocastServiceRegistrationPolicy
 {
   template <typename NodeT, typename ServiceT>
@@ -118,16 +120,15 @@ struct RosToAgnocastServiceRegistrationPolicy
 // are not needed and would cause include cycles.
 struct NoBridgeRegistrationPolicy
 {
-  template <typename T, typename... Args>
-  static void register_bridge(Args &&... args)
+  // Pubsub variant: register_bridge<MessageT>(topic_name, id).
+  template <typename MessageT>
+  static void register_bridge(const std::string &, topic_local_id_t)
   {
-    register_bridge_impl(std::forward<Args>(args)...);
   }
 
-private:
-  static void register_bridge_impl(const std::string &, topic_local_id_t) {}
-  template <typename NodeT>
-  static void register_bridge_impl(NodeT *, const std::string &)
+  // Service variant: register_bridge<NodeT, ServiceT>(node, service_name).
+  template <typename NodeT, typename ServiceT>
+  static void register_bridge(NodeT *, const std::string &)
   {
   }
 };
@@ -162,6 +163,9 @@ inline void send_performance_pubsub_bridge_registration_by_type_name(
   }
 
   const std::string uds_addr = create_uds_addr_for_bridge(PERFORMANCE_BRIDGE_VIRTUAL_PID);
+  // send_bridge_uds_message() handles its own shutdown-driven abort by
+  // sampling rclcpp::ok() / agnocast::ok() at entry and bailing on a watched
+  // true->false transition; no predicate needs to be plumbed through.
   (void)send_bridge_uds_message(uds_addr, msg, logger);
 }
 

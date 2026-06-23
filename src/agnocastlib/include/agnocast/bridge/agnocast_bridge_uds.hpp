@@ -32,6 +32,7 @@
 
 #include <rclcpp/logger.hpp>
 #include <rclcpp/logging.hpp>
+#include <rclcpp/utilities.hpp>
 
 #include <fcntl.h>
 #include <sys/socket.h>
@@ -49,12 +50,24 @@
 namespace agnocast
 {
 
+// Forward-declared so this free-standing helper can poll agnocast::ok()
+// without pulling in node/agnocast_context.hpp (which would recreate the
+// include cycle bridge_uds.hpp <- publisher.hpp <- context).
+bool ok();
+
 // Mirrors the historical POSIX MQ retry budget (100 attempts * 100ms = 10s).
 // Triggers on (a) ECONNREFUSED while the bridge_manager has not yet bind()ed
 // the listener, and (b) EAGAIN/ENOBUFS when the receiver's socket buffer is
 // momentarily full.
 inline constexpr int BRIDGE_UDS_SEND_MAX_RETRIES = 100;
 inline constexpr useconds_t BRIDGE_UDS_SEND_RETRY_INTERVAL_US = 100000;
+// Sliced abort poll granularity. Splitting the 100 ms back-off into ten 10 ms
+// chunks bounds the worst-case shutdown latency to ~10 ms per outstanding
+// sender without otherwise changing the retry cadence.
+inline constexpr useconds_t BRIDGE_UDS_SEND_ABORT_POLL_INTERVAL_US = 10000;
+static_assert(
+  BRIDGE_UDS_SEND_RETRY_INTERVAL_US % BRIDGE_UDS_SEND_ABORT_POLL_INTERVAL_US == 0,
+  "abort poll interval must divide the retry interval evenly");
 
 namespace detail
 {
@@ -110,10 +123,53 @@ inline int create_bridge_uds_listener(const std::string & addr)
 // listener (sendto == ECONNREFUSED) and the case where its receive buffer is
 // momentarily full (EAGAIN / ENOBUFS), matching the budget the old POSIX MQ
 // EAGAIN loop used.
+//
+// Shutdown handling: at entry, the function samples rclcpp::ok() and
+// agnocast::ok() once each. Any lifecycle that is true at entry becomes a
+// "watched" lifecycle; the retry loop then bails as soon as any watched
+// lifecycle transitions to false. If both are already false at entry, the
+// function returns false without attempting any sendto() — there is no
+// caller whose lifecycle is still meant to observe the result.
+//
+// Why sample at entry instead of checking both unconditionally?
+//   * A pure-rclcpp process never calls agnocast::init(), so agnocast::ok()
+//     is permanently false. Treating that as "abort" would short-circuit
+//     every send. Conversely a pure-agnocast process leaves rclcpp::ok()
+//     undefined/false. Sampling once at entry means we only react to a
+//     true->false transition of a lifecycle that was actually in use when
+//     the call started, which is the SIGINT/SIGTERM behaviour we want.
+//   * Mixed processes (both contexts initialised) get the strictest
+//     behaviour: a shutdown on either context aborts the send.
+//
+// Abort polling cadence: the predicate is checked before each sendto() and
+// every ~10 ms during the back-off sleep, bounding the worst-case
+// SIGINT-to-return latency to ~10 ms even when the bridge_manager never
+// comes up.
 template <typename MsgT>
 bool send_bridge_uds_message(
   const std::string & addr, const MsgT & msg, const rclcpp::Logger & logger)
 {
+  // Snapshot both lifecycles. Whatever was true at entry becomes a watched
+  // lifecycle; a later transition to false aborts the retry loop.
+  const bool watch_rclcpp = rclcpp::ok();
+  const bool watch_agnocast = agnocast::ok();
+  if (!watch_rclcpp && !watch_agnocast) {
+    // No lifecycle is alive to observe the result; don't even open a socket.
+    RCLCPP_WARN_ONCE(
+      logger, "bridge UDS sendto() skipped: neither rclcpp nor agnocast context is initialised");
+    return false;
+  }
+  // Returns true while every watched lifecycle is still up.
+  const auto still_alive = [watch_rclcpp, watch_agnocast]() {
+    if (watch_rclcpp && !rclcpp::ok()) {
+      return false;
+    }
+    if (watch_agnocast && !agnocast::ok()) {
+      return false;
+    }
+    return true;
+  };
+
   // Non-blocking so a slow receiver cannot stall the publisher's calling
   // thread (e.g. a constructor on the application's hot path); the retry loop
   // below converts EAGAIN/EWOULDBLOCK into a bounded back-off.
@@ -136,9 +192,32 @@ bool send_bridge_uds_message(
   // Strip the leading NUL when logging so the abstract name is readable.
   const std::string display_name = (!addr.empty() && addr.front() == '\0') ? addr.substr(1) : addr;
 
+  // Helper: usleep(BRIDGE_UDS_SEND_RETRY_INTERVAL_US) sliced into
+  // BRIDGE_UDS_SEND_ABORT_POLL_INTERVAL_US chunks so a watched-lifecycle
+  // shutdown can fire within ~10 ms of e.g. SIGINT. Returns true if the full
+  // back-off elapsed without abort, false if a watched lifecycle went down.
+  const auto interruptible_backoff = [&still_alive]() {
+    constexpr int slices =
+      static_cast<int>(BRIDGE_UDS_SEND_RETRY_INTERVAL_US / BRIDGE_UDS_SEND_ABORT_POLL_INTERVAL_US);
+    for (int i = 0; i < slices; ++i) {
+      if (!still_alive()) {
+        return false;
+      }
+      usleep(BRIDGE_UDS_SEND_ABORT_POLL_INTERVAL_US);
+    }
+    return true;
+  };
+
   ssize_t send_result = -1;
   int last_errno = 0;
+  bool aborted = false;
   for (int retry = 0; retry <= BRIDGE_UDS_SEND_MAX_RETRIES; ++retry) {
+    // Honour the shutdown check on entry so a request issued after shutdown
+    // has already begun never even attempts the first sendto().
+    if (!still_alive()) {
+      aborted = true;
+      break;
+    }
     // MSG_NOSIGNAL is largely a no-op for SOCK_DGRAM (no broken-pipe path),
     // but keep it for parity with the stream-based debug socket and to remain
     // robust against any future protocol changes.
@@ -161,10 +240,20 @@ bool send_bridge_uds_message(
       break;
     }
     if (retry < BRIDGE_UDS_SEND_MAX_RETRIES) {
-      usleep(BRIDGE_UDS_SEND_RETRY_INTERVAL_US);
+      if (!interruptible_backoff()) {
+        aborted = true;
+        break;
+      }
     }
   }
 
+  if (aborted) {
+    RCLCPP_WARN_ONCE(
+      logger, "bridge UDS sendto() aborted by shutdown while waiting for '%s'",
+      display_name.c_str());
+    close(fd);
+    return false;
+  }
   if (send_result < 0) {
     RCLCPP_ERROR(
       logger, "bridge UDS sendto() failed for '%s': %s (errno: %d)", display_name.c_str(),
