@@ -80,10 +80,10 @@ std::string create_mq_name_for_agnocast_publish(
   return create_mq_name("/agnocast", topic_name, id);
 }
 
-// MQ-name suffix that scopes the per-IPC-namespace performance bridge by domain.
-// An unset OR empty ROS_DOMAIN_ID means "no domain" (no suffix), keeping this in
-// sync with the Python discovery agent (bridge_decider._bridge_mq_name).
-static std::string performance_domain_suffix()
+// UDS-address suffix that scopes the per-IPC-namespace bridge listener by
+// ROS domain. An unset OR empty ROS_DOMAIN_ID means "no domain" (no suffix),
+// keeping this in sync with the Python discovery agent (bridge_decider._uds_addr).
+static std::string bridge_domain_suffix()
 {
   const char * domain_id = getenv("ROS_DOMAIN_ID");
   if (domain_id == nullptr || *domain_id == '\0') {
@@ -109,13 +109,16 @@ uint32_t get_ros_domain_id()
   return static_cast<uint32_t>(value);
 }
 
-std::string create_mq_name_for_bridge(const pid_t pid)
+std::string create_uds_addr_for_bridge()
 {
-  std::string name = "/agnocast_bridge_manager@" + std::to_string(pid);
-  if (pid == PERFORMANCE_BRIDGE_VIRTUAL_PID) {
-    name += performance_domain_suffix();
-  }
-  return name;
+  // Abstract-namespace UDS addresses start with a NUL byte; the rest is the
+  // name. We embed the NUL explicitly so the returned std::string carries the
+  // correct length when forwarded to bind()/sendto().
+  std::string addr;
+  addr.push_back('\0');
+  addr += BRIDGE_UDS_NAME;
+  addr += bridge_domain_suffix();
+  return addr;
 }
 
 uint64_t get_self_ipc_ns_inode()

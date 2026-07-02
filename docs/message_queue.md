@@ -35,15 +35,41 @@ To satisfy the second rule, all the occurrence of `/` in topic names are replace
 
 ## How message queue is used in Agnocast Bridge?
 
-The message queue is also used for communication between Agnocast processes and Bridge Manager processes. When an Agnocast publisher or subscriber is created, it sends a bridge request to the Bridge Manager via message queue.
+> [!NOTE]
+> The bridge registration channel no longer uses POSIX message queues. It was
+> ported to abstract-namespace UNIX domain sockets to evaluate the trade-offs
+> described in the design doc (in particular, automatic kernel-level cleanup
+> when the bridge_manager exits, and to remove the `fs.mqueue.*` setup
+> requirement). The notes below describe the current implementation; the
+> on-the-wire payload (``BridgeMsg`` with its ``BridgeMsgType`` tag and payload
+> variants) is unchanged so the structs and their names still reference the
+> old "Mq" module (`agnocast_mq.hpp`).
 
-The message queue is used as follows:
+When an Agnocast publisher or subscriber is created — and when the
+per-namespace discovery daemon needs a cross-NS bridge — it sends a bridge
+request to the Bridge Manager over an abstract-namespace UDS:
 
-- The first Agnocast process spawns a global Bridge Manager that opens `/agnocast_bridge_manager@-1` (optionally with a `_d<ROS_DOMAIN_ID>` suffix when `ROS_DOMAIN_ID` is set) as a receiver.
-- All Agnocast processes send bridge requests to this shared message queue.
-- Upon receiving the request, the Bridge Manager creates the appropriate bridge if conditions are met.
+- The first Agnocast process spawns a global Bridge Manager that creates a
+  `SOCK_DGRAM` socket and `bind()`s it to the abstract-namespace address
+  `\0agnocast_bridge_manager` (optionally with a `_d<ROS_DOMAIN_ID>` suffix
+  when `ROS_DOMAIN_ID` is set). epoll on this fd fires whenever a datagram
+  is queued.
+- All Agnocast processes (and the per-namespace discovery daemon) open a
+  `SOCK_DGRAM` socket and `sendto()` one payload to this address. Each
+  datagram is delivered atomically by the kernel; there is no
+  `connect()` / `accept()` handshake, and no per-message framing.
+- The payload is a tagged-union `BridgeMsg`. Senders transmit only the bytes
+  for the active variant (`bridge_msg_wire_size<PayloadT>()`), so the
+  receiver validates the byte count against the tag offset first, then
+  against the variant's expected wire size.
+- Until the bridge_manager has bound the address, `sendto()` returns
+  `ECONNREFUSED`; the sender retries with the same budget (100 attempts spaced
+  100 ms apart) that the old `mq_send` `EAGAIN` loop used. This is the only
+  application-visible behaviour change: the very first bridge registration
+  after startup may block for up to ~10 seconds while the bridge_manager
+  comes up.
 
-The message definition is:
+The wire-format message is:
 
 ```cpp
 struct BridgeMsg {
@@ -55,3 +81,8 @@ struct BridgeMsg {
   } payload;
 };
 ```
+
+Because abstract-namespace UDS addresses are released by the kernel as soon
+as the last fd referencing them is closed, there is nothing to unlink even
+if the bridge_manager crashes; the address simply becomes free for the next
+bridge_manager to bind.

@@ -77,13 +77,34 @@ TEST(DaemonBridgeMqTest, BridgeMsgWireLayout)
 }
 
 // An empty ROS_DOMAIN_ID (set but "") means "no domain": no `_d` suffix.
-TEST(DaemonBridgeMqTest, BridgeMqNameEmptyDomainIdHasNoSuffix)
+TEST(DaemonBridgeMqTest, BridgeUdsAddrEmptyDomainIdHasNoSuffix)
 {
   const ScopedRosDomainId guard;
   setenv("ROS_DOMAIN_ID", "", 1);
-  EXPECT_EQ(
-    agnocast::create_mq_name_for_bridge(agnocast::PERFORMANCE_BRIDGE_VIRTUAL_PID),
-    "/agnocast_bridge_manager@" + std::to_string(agnocast::PERFORMANCE_BRIDGE_VIRTUAL_PID));
+  const auto addr = agnocast::create_uds_addr_for_bridge();
+  ASSERT_FALSE(addr.empty());
+  EXPECT_EQ(addr[0], '\0');
+  EXPECT_EQ(addr.substr(1), "agnocast_bridge_manager");
+}
+
+TEST(DaemonBridgeMqTest, BridgeUdsAddrAppendsDomainId)
+{
+  const ScopedRosDomainId guard;
+  setenv("ROS_DOMAIN_ID", "7", 1);
+  const auto addr = agnocast::create_uds_addr_for_bridge();
+  ASSERT_FALSE(addr.empty());
+  EXPECT_EQ(addr[0], '\0');
+  EXPECT_EQ(addr.substr(1), "agnocast_bridge_manager_d7");
+}
+
+TEST(DaemonBridgeMqTest, BridgeUdsAddrUnsetDomainIdHasNoSuffix)
+{
+  const ScopedRosDomainId guard;
+  unsetenv("ROS_DOMAIN_ID");
+  const auto addr = agnocast::create_uds_addr_for_bridge();
+  ASSERT_FALSE(addr.empty());
+  EXPECT_EQ(addr[0], '\0');
+  EXPECT_EQ(addr.substr(1), "agnocast_bridge_manager");
 }
 
 // Performance-mode daemon bridges have no local endpoint to query, so the QoS

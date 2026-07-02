@@ -8,8 +8,6 @@
 namespace agnocast
 {
 
-inline constexpr pid_t PERFORMANCE_BRIDGE_VIRTUAL_PID = -1;
-
 inline constexpr size_t SERVICE_NAME_BUFFER_SIZE = 256;
 inline constexpr size_t MESSAGE_TYPE_BUFFER_SIZE = 256;
 inline constexpr size_t SERVICE_TYPE_BUFFER_SIZE = 256;
@@ -69,17 +67,29 @@ struct BridgeMsg
   } payload;
 };
 
-constexpr int64_t BRIDGE_MQ_MAX_MESSAGES = 256;
-constexpr int64_t BRIDGE_MQ_MESSAGE_SIZE = sizeof(BridgeMsg);
-constexpr mode_t BRIDGE_MQ_PERMS = 0600;
+constexpr int64_t BRIDGE_MSG_MAX_SIZE = sizeof(BridgeMsg);
 
 // Wire size of a BridgeMsg carrying a specific payload variant: the tag plus
-// just the active variant's bytes. Used both for `mq_send` and for sizing
-// auxiliary buffers.
+// just the active variant's bytes. Used both to size the datagram sent over
+// the abstract-namespace UDS transport and to size auxiliary buffers.
 template <typename PayloadT>
 constexpr size_t bridge_msg_wire_size()
 {
   return offsetof(BridgeMsg, payload) + sizeof(PayloadT);
 }
+
+// Abstract-namespace UDS address (sun_path[0] == '\0', rest is the name).
+// Scope is the network namespace; one bridge_manager per IPC namespace listens
+// on the address. The optional `_d<ROS_DOMAIN_ID>` suffix mirrors the old MQ
+// naming convention.
+//
+// Bridge manager: one address per IPC namespace,
+//   `\0agnocast_bridge_manager{_d<DOMAIN>}`.
+//
+// The daemon (per-namespace discovery agent) shares the same address: it sends
+// its cross-NS bridge requests as `BridgeMsg` payloads tagged
+// `BridgeMsgType::DaemonPubSub`, so there is a single UDS listener per
+// bridge_manager for all bridge-registration traffic.
+inline constexpr const char * BRIDGE_UDS_NAME = "agnocast_bridge_manager";
 
 }  // namespace agnocast
